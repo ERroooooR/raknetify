@@ -143,6 +143,7 @@ curseforge {
             gameVersion("minecraft-1-21", "1-21-6")
             gameVersion("minecraft-1-21", "1-21-7")
             gameVersion("minecraft-1-21", "1-21-8")
+            gameVersion("minecraft-1-21", "1-21-9")
             gameVersion("modloader", "fabric")
             gameVersion("java", "java-22")
             gameVersion("java", "java-21")
