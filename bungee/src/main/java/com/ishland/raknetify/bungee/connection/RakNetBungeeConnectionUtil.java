@@ -30,7 +30,6 @@ import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompressi
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
-import com.ishland.raknetify.common.connection.DebugWriteTimeoutHandler;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import io.netty.channel.Channel;
