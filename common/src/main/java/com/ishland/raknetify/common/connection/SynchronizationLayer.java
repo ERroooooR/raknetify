@@ -163,7 +163,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             // read
             {
                 if (Constants.DEBUG) System.out.println("Raknetify: Received sync packet");
-                ctx.fireChannelRead(SYNC_REQUEST_OBJECT);
+                ctx.fireUserEventTriggered(SYNC_REQUEST_OBJECT);
                 final ByteBuf byteBuf = packet.createData().skipBytes(1);
                 try {
                     final byte count = byteBuf.readByte();
