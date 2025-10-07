@@ -36,6 +36,7 @@ import it.unimi.dsi.fastutil.ints.IntSet;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import it.unimi.dsi.fastutil.objects.Reference2ReferenceLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ReferenceLinkedOpenHashSet;
 import network.ycc.raknet.frame.Frame;
 import network.ycc.raknet.frame.FrameData;
 import network.ycc.raknet.packet.FrameSet;
@@ -44,6 +45,7 @@ import network.ycc.raknet.pipeline.FrameJoiner;
 import network.ycc.raknet.pipeline.FrameOrderIn;
 import network.ycc.raknet.pipeline.FrameOrderOut;
 import network.ycc.raknet.pipeline.ReliabilityHandler;
+import org.apache.commons.math3.util.Pair;
 
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
@@ -205,7 +207,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         ctx.fireChannelRead(msg);
     }
 
-    private final Reference2ReferenceLinkedOpenHashMap<ChannelPromise, Object> queue = new Reference2ReferenceLinkedOpenHashMap<>();
+    private final ReferenceLinkedOpenHashSet<Pair<ChannelPromise, Object>> queue = new ReferenceLinkedOpenHashSet<>();
     private final ObjectArrayList<Frame> queuedFrames = new ObjectArrayList<>();
     private boolean isWaitingForResponse = false;
 
@@ -213,7 +215,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         initializeIfNecessary(ctx);
         if (msg == SYNC_REQUEST_OBJECT) {
-            if (isWaitingForResponse) return;
+            if (isWaitingForResponse) {
+                promise.setSuccess();
+                return;
+            }
 
             dropSenderPackets();
 
@@ -235,12 +240,13 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             final FrameData frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, byteBuf);
             frameData.setReliability(FramedPacket.Reliability.RELIABLE);
             this.isWaitingForResponse = true;
-            ctx.write(frameData, promise).addListener(future -> this.flushQueue(ctx));
+            ctx.write(frameData).addListener(future -> this.flushQueue(ctx));
             byteBuf.release();
+            promise.setSuccess();
             return;
         }
         if (isWaitingForResponse) {
-            this.queue.put(promise, msg);
+            this.queue.add(Pair.create(promise, msg));
             return;
         }
         super.write(ctx, msg, promise);
@@ -304,8 +310,9 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
 
         if (Constants.DEBUG) System.out.println("Raknetify: Flushing %d queued packets as synchronization finished".formatted(this.queue.size()));
         while (!this.queue.isEmpty()) {
-            final ChannelPromise promise = this.queue.firstKey();
-            final Object msg = this.queue.removeFirst();
+            Pair<ChannelPromise, Object> pair = this.queue.removeFirst();
+            final ChannelPromise promise = pair.getFirst();
+            final Object msg = pair.getSecond();
             ctx.write(msg, promise);
         }
     }

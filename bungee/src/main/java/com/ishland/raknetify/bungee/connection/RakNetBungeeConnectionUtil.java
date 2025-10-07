@@ -30,6 +30,7 @@ import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompressi
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
+import com.ishland.raknetify.common.connection.DebugWriteTimeoutHandler;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import io.netty.channel.Channel;
@@ -84,6 +85,7 @@ public class RakNetBungeeConnectionUtil {
             channel.pipeline().addBefore(PipelineUtils.FRAME_PREPENDER_AND_COMPRESS, StripFrameHandler.NAME, StripFrameHandler.INSTANCE); // no-op
             if (channel.pipeline().get(HAProxyMessageDecoder.class) != null)
                 channel.pipeline().remove(HAProxyMessageDecoder.class);
+//            channel.pipeline().replace(PipelineUtils.WRITE_TIMEOUT_HANDLER, PipelineUtils.WRITE_TIMEOUT_HANDLER, new DebugWriteTimeoutHandler(30));
             channel.pipeline().addBefore(PipelineUtils.BOSS_HANDLER, RakNetBungeeClientChannelEventListener.NAME, new RakNetBungeeClientChannelEventListener());
 //            System.out.println(channel.pipeline().names());
 //            final MultiChannellingPacketCapture handler = new MultiChannellingPacketCapture();

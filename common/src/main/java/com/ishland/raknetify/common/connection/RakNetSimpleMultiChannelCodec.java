@@ -97,12 +97,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             final FrameData data = encode0(ctx, buf);
             if (data != null) {
                 pendingWrites.add(new PendingWrite(data, promise));
+            } else {
+                promise.setSuccess();
             }
             buf.release();
             return;
         }
 
         if (msg == SIGNAL_START_MULTICHANNEL) {
+            promise.trySuccess();
             if (this.isMultichannelEnabled) return;
             if (!this.isMultichannelAvailable()) {
                 System.out.println("Raknetify: [MultiChannellingDataCodec] Failed to start multichannel: not available");
@@ -121,7 +124,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             } finally {
                 buf.release();
             }
-            promise.trySuccess();
             return;
         }
         if (msg == SynchronizationLayer.SYNC_REQUEST_OBJECT) {
@@ -130,13 +132,21 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 this.isMultichannelEnabled = false;
                 super.write(ctx, msg, promise);
             }
+            promise.setSuccess();
             return; // discard sync request when multichannel is not active
         }
 
         if (msg instanceof ByteBuf buf && buf.isReadable()) {
-            final FrameData frameData = encode0(ctx, buf);
-            if (frameData != null) ctx.write(frameData, promise);
-            buf.release();
+            try {
+                final FrameData frameData = encode0(ctx, buf);
+                if (frameData != null) {
+                    ctx.write(frameData, promise);
+                } else {
+                    promise.setSuccess();
+                }
+            } finally {
+                buf.release();
+            }
             return;
         }
 
