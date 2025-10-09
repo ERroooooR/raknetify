@@ -117,8 +117,6 @@ curseforge {
         register("main") {
             projectId = "631457"
 
-            gameVersion("minecraft-1-17", "1-17")
-            gameVersion("minecraft-1-17", "1-17-1")
             gameVersion("minecraft-1-18", "1-18")
             gameVersion("minecraft-1-18", "1-18-1")
             gameVersion("minecraft-1-18", "1-18-2")
