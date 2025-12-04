@@ -45,6 +45,7 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
     public static final boolean AFTER_1_21_4;
     public static final boolean AFTER_1_21_5;
     public static final boolean AFTER_1_21_8;
+    public static final boolean AFTER_1_21_10;
 
     static {
         try {
@@ -55,6 +56,7 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
             AFTER_1_21_4 = VersionPredicate.parse(">1.21.4").test(FabricLoader.getInstance().getModContainer("minecraft").get().getMetadata().getVersion());
             AFTER_1_21_5 = VersionPredicate.parse(">1.21.5").test(FabricLoader.getInstance().getModContainer("minecraft").get().getMetadata().getVersion());
             AFTER_1_21_8 = VersionPredicate.parse(">1.21.8").test(FabricLoader.getInstance().getModContainer("minecraft").get().getMetadata().getVersion());
+            AFTER_1_21_10 = VersionPredicate.parse(">1.21.10").test(FabricLoader.getInstance().getModContainer("minecraft").get().getMetadata().getVersion());
         } catch (VersionParsingException e) {
             throw new RuntimeException(e);
         }
@@ -79,7 +81,9 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
                 if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.client.MixinMultiplayerServerListPinger1_20_2"))
                     return AFTER_1_20_1 && !AFTER_1_20_4;
                 if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.client.MixinMultiplayerServerListPinger1_20_5"))
-                    return AFTER_1_20_4;
+                    return AFTER_1_20_4 && !AFTER_1_21_10;
+                if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.client.MixinMultiplayerServerListPinger1_21_11"))
+                    return AFTER_1_21_10;
                 if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.client.hud.MixinDebugHud1_21_8"))
                     return !AFTER_1_21_8;
                 return true;

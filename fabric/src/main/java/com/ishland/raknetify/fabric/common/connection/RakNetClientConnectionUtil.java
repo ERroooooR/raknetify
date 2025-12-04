@@ -52,12 +52,36 @@ public class RakNetClientConnectionUtil {
         }
     }
 
-    public static ChannelFuture connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, ClientConnection connection) {
+    public static ClientConnection connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ClientConnection> original) {
+        System.out.println("aaa");
+        try {
+            ThreadLocalUtil.setInitializingRaknet(true);
+            ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            return original.call(address, backend, null);
+        } finally {
+            ThreadLocalUtil.setInitializingRaknet(false);
+            ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+        }
+    }
+
+    public static ChannelFuture connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection) {
         System.out.println("aaaa");
         try {
             ThreadLocalUtil.setInitializingRaknet(true);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
-            return ClientConnection.connect(address, useEpoll, connection);
+            return original.call(address, useEpoll, connection);
+        } finally {
+            ThreadLocalUtil.setInitializingRaknet(false);
+            ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+        }
+    }
+
+    public static ChannelFuture connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection) {
+        System.out.println("aaaa");
+        try {
+            ThreadLocalUtil.setInitializingRaknet(true);
+            ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            return original.call(address, backend, connection);
         } finally {
             ThreadLocalUtil.setInitializingRaknet(false);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(false);

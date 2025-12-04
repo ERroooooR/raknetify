@@ -34,6 +34,14 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.epoll.EpollDatagramChannel;
+import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.kqueue.KQueueDatagramChannel;
+import io.netty.channel.kqueue.KQueueSocketChannel;
+import io.netty.channel.socket.DatagramChannel;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import network.ycc.raknet.RakNet;
 
 public class RakNetFabricConnectionUtil {
@@ -76,6 +84,18 @@ public class RakNetFabricConnectionUtil {
         ChannelHandler handler = pipeline.remove(RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE);
         if (handler != null) {
             pipeline.addAfter("encoder", RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE, handler);
+        }
+    }
+
+    public static DatagramChannel fromSocketChannel(Class<? extends SocketChannel> clazz) {
+        if (clazz == NioSocketChannel.class) {
+            return new NioDatagramChannel();
+        } else if (clazz == EpollSocketChannel.class) {
+            return new EpollDatagramChannel();
+        } else if (clazz == KQueueSocketChannel.class) {
+            return new KQueueDatagramChannel();
+        } else {
+            throw new UnsupportedOperationException(clazz.getName());
         }
     }
 

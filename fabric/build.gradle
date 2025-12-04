@@ -58,6 +58,9 @@ loom {
 			ideConfigGenerated(true)
 		}
 	}
+    mixin {
+        useLegacyMixinAp = true
+    }
 }
 
 jar {

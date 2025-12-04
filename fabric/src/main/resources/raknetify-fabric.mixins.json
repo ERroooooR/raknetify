@@ -48,6 +48,7 @@
     "access.IDebugHudEntries",
     "client.MixinMultiplayerServerListPinger1_20_2",
     "client.MixinMultiplayerServerListPinger1_20_5",
+    "client.MixinMultiplayerServerListPinger1_21_11",
     "common.MixinServerAddress"
   ]
 }

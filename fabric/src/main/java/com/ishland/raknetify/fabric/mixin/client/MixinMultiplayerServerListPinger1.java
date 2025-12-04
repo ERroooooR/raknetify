@@ -31,6 +31,7 @@ import net.minecraft.client.network.MultiplayerServerListPinger;
 import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.network.ClientConnection;
+import net.minecraft.network.NetworkingBackend;
 import net.minecraft.network.listener.ClientQueryPacketListener;
 import network.ycc.raknet.RakNet;
 import org.spongepowered.asm.mixin.Dynamic;
@@ -64,8 +65,14 @@ public abstract class MixinMultiplayerServerListPinger1 implements ClientQueryPa
     }
 
     @Dynamic
-    @WrapWithCondition(method = {"method_10839(Lnet/minecraft/class_2561;)V", "onDisconnected"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiplayerServerListPinger;ping(Ljava/net/InetSocketAddress;Lnet/minecraft/client/network/ServerAddress;Lnet/minecraft/client/network/ServerInfo;)V"), require = 0)
+    @WrapWithCondition(method = {"method_10839(Lnet/minecraft/class_2561;)V", "onDisconnected"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiplayerServerListPinger;method_3001(Ljava/net/InetSocketAddress;Lnet/minecraft/client/network/ServerAddress;Lnet/minecraft/client/network/ServerInfo;)V"), require = 0)
     private boolean noPingRaknet(MultiplayerServerListPinger instance, InetSocketAddress socketAddress, ServerAddress address, ServerInfo serverInfo) {
+        final Channel channel = ((IClientConnection) field_3774).getChannel();
+        return !(channel.config() instanceof RakNet.Config);
+    }
+
+    @WrapWithCondition(method = "onDisconnected", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiplayerServerListPinger;ping(Ljava/net/InetSocketAddress;Lnet/minecraft/client/network/ServerAddress;Lnet/minecraft/client/network/ServerInfo;Lnet/minecraft/network/NetworkingBackend;)V"), require = 0)
+    private boolean noPingRaknet(MultiplayerServerListPinger instance, InetSocketAddress socketAddress, ServerAddress address, ServerInfo serverInfo, NetworkingBackend backend) {
         final Channel channel = ((IClientConnection) field_3774).getChannel();
         return !(channel.config() instanceof RakNet.Config);
     }
