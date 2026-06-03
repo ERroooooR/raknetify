@@ -42,7 +42,7 @@ public class MixinSampleSubscriptionTracker {
     @Shadow(aliases = "field_48812") @Final private Queue<?> pendingQueue;
 
     @Dynamic
-    @Inject(method = "method_56654", at = @At("RETURN"))
+    @Inject(method = "method_56654", at = @At("RETURN"), require = 0)
     private void cleanQueue(CallbackInfo ci) {
         this.pendingQueue.clear();
     }

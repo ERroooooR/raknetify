@@ -31,9 +31,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.network.MultiplayerServerListPinger;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.network.ClientConnection;
-import net.minecraft.util.profiler.MultiValueDebugSampleLogImpl;
-import net.minecraft.util.profiler.log.DebugSampleLog;
-import net.minecraft.util.profiler.log.MultiValueDebugSampleLog;
+import org.spongepowered.asm.mixin.injection.Coerce;
 import org.spongepowered.asm.mixin.Dynamic;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -44,8 +42,8 @@ import java.net.InetSocketAddress;
 public class MixinMultiplayerServerListPinger1_20_5 {
 
     @Dynamic
-    @WrapOperation(method = {"add", "method_3003"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;method_10753(Ljava/net/InetSocketAddress;ZLnet/minecraft/util/profiler/MultiValueDebugSampleLogImpl;)Lnet/minecraft/network/ClientConnection;"))
-    private ClientConnection redirectConnect(InetSocketAddress address, boolean useEpoll, MultiValueDebugSampleLogImpl log, Operation<ClientConnection> original, ServerInfo entry, Runnable runnable) {
+    @WrapOperation(method = {"pingServer", "add", "method_3003"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;connect(Ljava/net/InetSocketAddress;ZLnet/minecraft/util/profiler/MultiValueDebugSampleLogImpl;)Lnet/minecraft/network/ClientConnection;"), require = 0)
+    private ClientConnection redirectConnect(InetSocketAddress address, boolean useEpoll, @Coerce Object log, Operation<ClientConnection> original, ServerInfo entry, Runnable runnable) {
         final PrefixUtil.Info info = PrefixUtil.getInfo(entry.address);
         return info.useRakNet() ? RakNetClientConnectionUtil.connect(address, useEpoll, info.largeMTU(), original, true) : original.call(address, useEpoll, null);
     }

@@ -50,7 +50,7 @@ public class MixinServerPlayNetworkHandler1_20_1 {
     @Shadow public ServerPlayerEntity player;
 
     @Dynamic
-    @ModifyExpressionValue(method = "tick", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerPlayNetworkHandler;field_14136:J", opcode = Opcodes.GETFIELD))
+    @ModifyExpressionValue(method = "tick", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerPlayNetworkHandler;field_14136:J", opcode = Opcodes.GETFIELD), require = 0)
     private long disableKeepAlive(long original) {
         if (!(((IClientConnection) MultiVersionUtil.ServerPlayNetworkHandler$connection.get((ServerPlayNetworkHandler) (Object) this)).getChannel().config() instanceof RakNet.Config)) {
             return original;
@@ -59,13 +59,13 @@ public class MixinServerPlayNetworkHandler1_20_1 {
     }
 
     @Dynamic
-    @WrapWithCondition(method = "method_12082", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/network/ServerPlayNetworkHandler;method_14367(Lnet/minecraft/text/Text;)V"))
+    @WrapWithCondition(method = "method_12082", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/network/ServerPlayNetworkHandler;method_14367(Lnet/minecraft/text/Text;)V"), require = 0)
     private boolean stopTimeoutPlayersOnKeepAlive(ServerPlayNetworkHandler instance, Text reason) {
         return !(((IClientConnection) MultiVersionUtil.ServerPlayNetworkHandler$connection.get((ServerPlayNetworkHandler) (Object) this)).getChannel().config() instanceof RakNet.Config);
     }
 
     @Dynamic
-    @WrapWithCondition(method = "method_12082", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerPlayerEntity;field_13967:I", opcode = Opcodes.PUTFIELD))
+    @WrapWithCondition(method = "method_12082", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerPlayerEntity;field_13967:I", opcode = Opcodes.PUTFIELD), require = 0)
     private boolean redirectPingStoring(ServerPlayerEntity instance, int value) {
         return !(((IClientConnection) MultiVersionUtil.ServerPlayNetworkHandler$connection.get((ServerPlayNetworkHandler) (Object) this)).getChannel().config() instanceof RakNet.Config);
     }

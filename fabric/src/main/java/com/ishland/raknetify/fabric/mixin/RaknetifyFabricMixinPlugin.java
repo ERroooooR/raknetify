@@ -47,6 +47,17 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
     public static final boolean AFTER_1_21_8;
     public static final boolean AFTER_1_21_10;
 
+    private static final boolean CONNECTOR_PRESENT;
+
+    static {
+        boolean connectorPresent = false;
+        try {
+            connectorPresent = FabricLoader.getInstance().isModLoaded("connector");
+        } catch (Throwable ignored) {
+        }
+        CONNECTOR_PRESENT = connectorPresent;
+    }
+
     static {
         try {
             AFTER_1_20_1 = VersionPredicate.parse(">1.20.1").test(FabricLoader.getInstance().getModContainer("minecraft").get().getMetadata().getVersion());
@@ -93,6 +104,8 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
         }
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerPlayNetworkHandler1_20_1"))
             return !AFTER_1_20_1;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.common.quirks.MixinSampleSubscriptionTracker"))
+            return !CONNECTOR_PRESENT;
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerCommonNetworkHandler"))
             return AFTER_1_20_1;
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinPlayerManager1_20_2"))

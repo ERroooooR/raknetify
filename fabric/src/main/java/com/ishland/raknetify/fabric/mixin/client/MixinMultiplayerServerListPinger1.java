@@ -31,9 +31,9 @@ import net.minecraft.client.network.MultiplayerServerListPinger;
 import net.minecraft.client.network.ServerAddress;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.network.ClientConnection;
-import net.minecraft.network.NetworkingBackend;
 import net.minecraft.network.listener.ClientQueryPacketListener;
 import network.ycc.raknet.RakNet;
+import org.spongepowered.asm.mixin.injection.Coerce;
 import org.spongepowered.asm.mixin.Dynamic;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -72,7 +72,7 @@ public abstract class MixinMultiplayerServerListPinger1 implements ClientQueryPa
     }
 
     @WrapWithCondition(method = "onDisconnected", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/MultiplayerServerListPinger;ping(Ljava/net/InetSocketAddress;Lnet/minecraft/client/network/ServerAddress;Lnet/minecraft/client/network/ServerInfo;Lnet/minecraft/network/NetworkingBackend;)V"), require = 0)
-    private boolean noPingRaknet(MultiplayerServerListPinger instance, InetSocketAddress socketAddress, ServerAddress address, ServerInfo serverInfo, NetworkingBackend backend) {
+    private boolean noPingRaknet(MultiplayerServerListPinger instance, InetSocketAddress socketAddress, ServerAddress address, ServerInfo serverInfo, @Coerce Object backend) {
         final Channel channel = ((IClientConnection) field_3774).getChannel();
         return !(channel.config() instanceof RakNet.Config);
     }

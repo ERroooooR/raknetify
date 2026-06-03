@@ -38,7 +38,7 @@ import java.util.List;
 public class MixinDebugHud1_21_8 {
 
     @Dynamic
-    @Inject(method = "method_1835", at = @At("RETURN"))
+    @Inject(method = {"getGameInformation", "getLeftText", "method_1835"}, at = @At("RETURN"))
     private void getLeftText(CallbackInfoReturnable<List<String>> cir) {
         DebugHudUtil.getDebugString(cir.getReturnValue()::add);
     }
