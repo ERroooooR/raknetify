@@ -37,10 +37,14 @@ public class RakNetClientConnectionUtil {
     }
 
     public static ClientConnection connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, Operation<ClientConnection> original, boolean hasPerformanceLog) {
-        System.out.println("aaa");
+        return connect(address, useEpoll, largeMTU, original, hasPerformanceLog, null);
+    }
+
+    public static ClientConnection connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, Operation<ClientConnection> original, boolean hasPerformanceLog, String routeHintHost) {
         try {
             ThreadLocalUtil.setInitializingRaknet(true);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            ThreadLocalUtil.setRaknetRouteHintHost(routeHintHost);
             if (hasPerformanceLog) {
                 return original.call(address, useEpoll, null);
             } else {
@@ -49,42 +53,58 @@ public class RakNetClientConnectionUtil {
         } finally {
             ThreadLocalUtil.setInitializingRaknet(false);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+            ThreadLocalUtil.setRaknetRouteHintHost(null);
         }
     }
 
     public static ClientConnection connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ClientConnection> original) {
-        System.out.println("aaa");
+        return connect(address, backend, largeMTU, original, null);
+    }
+
+    public static ClientConnection connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ClientConnection> original, String routeHintHost) {
         try {
             ThreadLocalUtil.setInitializingRaknet(true);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            ThreadLocalUtil.setRaknetRouteHintHost(routeHintHost);
             return original.call(address, backend, null);
         } finally {
             ThreadLocalUtil.setInitializingRaknet(false);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+            ThreadLocalUtil.setRaknetRouteHintHost(null);
         }
     }
 
     public static ChannelFuture connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection) {
-        System.out.println("aaaa");
+        return connect(address, useEpoll, largeMTU, original, connection, null);
+    }
+
+    public static ChannelFuture connect(InetSocketAddress address, boolean useEpoll, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection, String routeHintHost) {
         try {
             ThreadLocalUtil.setInitializingRaknet(true);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            ThreadLocalUtil.setRaknetRouteHintHost(routeHintHost);
             return original.call(address, useEpoll, connection);
         } finally {
             ThreadLocalUtil.setInitializingRaknet(false);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+            ThreadLocalUtil.setRaknetRouteHintHost(null);
         }
     }
 
     public static ChannelFuture connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection) {
-        System.out.println("aaaa");
+        return connect(address, backend, largeMTU, original, connection, null);
+    }
+
+    public static ChannelFuture connect(InetSocketAddress address, Object backend, boolean largeMTU, Operation<ChannelFuture> original, ClientConnection connection, String routeHintHost) {
         try {
             ThreadLocalUtil.setInitializingRaknet(true);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(largeMTU);
+            ThreadLocalUtil.setRaknetRouteHintHost(routeHintHost);
             return original.call(address, backend, connection);
         } finally {
             ThreadLocalUtil.setInitializingRaknet(false);
             ThreadLocalUtil.setInitializingRaknetLargeMTU(false);
+            ThreadLocalUtil.setRaknetRouteHintHost(null);
         }
     }
 

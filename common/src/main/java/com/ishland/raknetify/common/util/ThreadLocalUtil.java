@@ -31,6 +31,7 @@ public class ThreadLocalUtil {
 
     private static final ThreadLocal<Boolean> initializingRaknet = ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<Boolean> initializingRaknetLargeMTU = ThreadLocal.withInitial(() -> false);
+    private static final ThreadLocal<String> raknetRouteHintHost = ThreadLocal.withInitial(() -> null);
 
     public static void setInitializingRaknet(boolean value) {
         initializingRaknet.set(value);
@@ -40,12 +41,20 @@ public class ThreadLocalUtil {
         initializingRaknetLargeMTU.set(value);
     }
 
+    public static void setRaknetRouteHintHost(String value) {
+        raknetRouteHintHost.set(value);
+    }
+
     public static boolean isInitializingRaknet() {
         return initializingRaknet.get();
     }
 
     public static boolean isInitializingRaknetLargeMTU() {
         return initializingRaknetLargeMTU.get();
+    }
+
+    public static String getRaknetRouteHintHost() {
+        return raknetRouteHintHost.get();
     }
 
 }

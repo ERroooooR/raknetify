@@ -70,9 +70,10 @@ public class MixinCCConnect {
     @WrapOperation(method = {"connect(Ljava/net/InetSocketAddress;Lnet/minecraft/network/NetworkingBackend;Lnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_52271(Ljava/net/InetSocketAddress;ZLnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_10753(Ljava/net/InetSocketAddress;Z)Lnet/minecraft/network/ClientConnection;", "method_10753"}, at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/Bootstrap;channel(Ljava/lang/Class;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 1)
     private static AbstractBootstrap<Bootstrap, Channel> redirectChannel(Bootstrap instance, Class<? extends SocketChannel> aClass, Operation<AbstractBootstrap<Bootstrap, Channel>> original, InetSocketAddress address, @Share("raknetify$eventLoop") LocalRef<EventLoopGroup> raknetify$eventLoop) {
         EventLoopGroup eventLoopGroup = raknetify$eventLoop.get();
+        final boolean initializingRaknetLargeMTU = ThreadLocalUtil.isInitializingRaknetLargeMTU();
+        final String raknetRouteHintHost = ThreadLocalUtil.getRaknetRouteHintHost();
         return ThreadLocalUtil.isInitializingRaknet()
                 ? instance.channelFactory(() -> {
-                    final boolean initializingRaknetLargeMTU = ThreadLocalUtil.isInitializingRaknetLargeMTU();
                     final RakNetClientThreadedChannel channel = new RakNetClientThreadedChannel(() -> {
                         final DatagramChannel channel1 = RakNetFabricConnectionUtil.fromSocketChannel(aClass);
                         channel1.config().setOption(ChannelOption.IP_TOS, RakNetConnectionUtil.DEFAULT_IP_TOS);
@@ -83,6 +84,7 @@ public class MixinCCConnect {
                         return channel1;
                     });
                     RakNet.config(channel).setMTU(initializingRaknetLargeMTU ? Constants.LARGE_MTU : Constants.DEFAULT_MTU);
+                    channel.setGateRouteHint(raknetRouteHintHost);
                     channel.setProvidedParentEventLoop(eventLoopGroup.next());
                     return channel;
                 })

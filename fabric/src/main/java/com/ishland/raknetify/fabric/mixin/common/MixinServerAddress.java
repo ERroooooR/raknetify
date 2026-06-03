@@ -39,8 +39,11 @@ public class MixinServerAddress {
         PrefixUtil.Info info = PrefixUtil.getInfo(address);
         if (info.useRakNet()) {
             ServerAddress addr = original.call(info.stripped());
+            String prefix = info.gateRouteHint()
+                    ? (info.largeMTU() ? Constants.RAKNET_GATE_LARGE_MTU_PREFIX : Constants.RAKNET_GATE_PREFIX)
+                    : (info.largeMTU() ? Constants.RAKNET_LARGE_MTU_PREFIX : Constants.RAKNET_PREFIX);
             return new ServerAddress(
-                    (info.largeMTU() ? Constants.RAKNET_LARGE_MTU_PREFIX : Constants.RAKNET_PREFIX) + addr.getAddress(),
+                    prefix + addr.getAddress(),
                     addr.getPort()
             );
         } else {

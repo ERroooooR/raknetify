@@ -44,7 +44,7 @@ public class MixinMultiplayerServerListPinger1_21_11 {
     @WrapOperation(method = "add", at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;connect(Ljava/net/InetSocketAddress;Lnet/minecraft/network/NetworkingBackend;Lnet/minecraft/util/profiler/MultiValueDebugSampleLogImpl;)Lnet/minecraft/network/ClientConnection;"))
     private ClientConnection redirectConnect(InetSocketAddress address, NetworkingBackend backend, MultiValueDebugSampleLogImpl packetSizeLog, Operation<ClientConnection> original, ServerInfo entry) {
         final PrefixUtil.Info info = PrefixUtil.getInfo(entry.address);
-        return info.useRakNet() ? RakNetClientConnectionUtil.connect(address, backend, info.largeMTU(), original) : original.call(address, backend, null);
+        return info.useRakNet() ? RakNetClientConnectionUtil.connect(address, backend, info.largeMTU(), original, info.gateRouteHint() ? info.stripped() : null) : original.call(address, backend, null);
     }
 
 }
