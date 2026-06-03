@@ -59,6 +59,11 @@ public class PrefixUtil {
             }
             return host;
         }
+        // Un-bracketed IPv6: multiple colons (e.g. "::1", "2001:db8::1234")
+        final int firstColon = host.indexOf(':');
+        if (firstColon >= 0 && firstColon != host.lastIndexOf(':')) {
+            return host;
+        }
         // IPv4/hostname: check last colon for numeric port
         int lastColon = host.lastIndexOf(':');
         if (lastColon > 0) {

@@ -63,25 +63,18 @@ public abstract class MixinClientConnection {
     @Unique
     private volatile boolean isClosing = false;
 
-    @Inject(method = {"disconnect(Lnet/minecraft/text/Text;)V", "disconnect(Lnet/minecraft/network/DisconnectionInfo;)V"}, at = @At("HEAD"))
-    private void markClosing(CallbackInfo ci) {
-        isClosing = true;
-    }
-
     @Redirect(method = {"disconnect(Lnet/minecraft/text/Text;)V", "disconnect(Lnet/minecraft/network/DisconnectionInfo;)V"}, at = @At(value = "INVOKE", target = "Lio/netty/channel/ChannelFuture;awaitUninterruptibly()Lio/netty/channel/ChannelFuture;", remap = false), require = 0)
     private ChannelFuture noDisconnectWait(ChannelFuture instance) {
+        // isClosing gates redirectIsOpen after channel.close() has been initiated,
+        // preventing data from being sent/received during the async close window
+        // between channel.close() returning and the event loop completing shutdown.
         isClosing = true;
-//        if (instance.channel().eventLoop().inEventLoop()) {
-//            return instance; // no-op
-//        } else {
-//            return instance.awaitUninterruptibly();
-//        }
         return instance;
     }
 
     @Redirect(method = "*", at = @At(value = "INVOKE", target = "Lio/netty/channel/Channel;isOpen()Z", remap = false))
     private boolean redirectIsOpen(Channel instance) {
-        return this.channel != null && this.channel.isOpen();
+        return this.channel != null && (this.channel.isOpen() && !this.isClosing);
     }
 
 //    @Inject(method = "channelActive", at = @At("HEAD"))
