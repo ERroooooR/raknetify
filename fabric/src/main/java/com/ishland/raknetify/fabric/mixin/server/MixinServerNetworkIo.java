@@ -157,19 +157,68 @@ public abstract class MixinServerNetworkIo {
         }
     }
 
+    @Inject(method = "bind(Ljava/net/SocketAddress;)V", at = @At("HEAD"), require = 0, remap = false)
+    private void raknetify$traceSocketBind(SocketAddress address, CallbackInfo ci) {
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            System.out.println("Raknetify: intercepted bind(SocketAddress) for " + address);
+        }
+    }
+
+    @Unique
+    private void raknetify$logBootstrapStep(String step, Object detail) {
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            System.out.println("Raknetify: " + step + " -> " + detail);
+        }
+    }
+
+    @Unique
+    private ChannelFuture raknetify$forceAutoRead(ChannelFuture future, String source) {
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            future.addListener(listener -> {
+                if (listener.isSuccess()) {
+                    future.channel().config().setAutoRead(true);
+                    System.out.println("Raknetify: " + source + " -> forced autoRead=true on " + future.channel().getClass().getName());
+                }
+            });
+        }
+        return future;
+    }
+
     @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;group(Lio/netty/channel/EventLoopGroup;)Lio/netty/bootstrap/ServerBootstrap;", remap = false))
     private ServerBootstrap redirectGroup(ServerBootstrap instance, EventLoopGroup group, Operation<ServerBootstrap> original) {
         final boolean useEpoll = Epoll.isAvailable() && this.server.isUsingNativeTransport();
+        raknetify$logBootstrapStep("server-bootstrap.group", group.getClass().getName());
         return ThreadLocalUtil.isInitializingRaknet()
                 ? original.call(instance, useEpoll ? RaknetifyEventLoops.EPOLL_EVENT_LOOP_GROUP.get() : RaknetifyEventLoops.NIO_EVENT_LOOP_GROUP.get())
                 : original.call(instance, group);
     }
 
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;group(Lio/netty/channel/EventLoopGroup;)Lio/netty/bootstrap/ServerBootstrap;", remap = false), require = 0, remap = false)
+    private ServerBootstrap redirectGroupSocketAddress(ServerBootstrap instance, EventLoopGroup group, Operation<ServerBootstrap> original) {
+        return redirectGroup(instance, group, original);
+    }
+
+    @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;group(Lio/netty/channel/EventLoopGroup;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractGroup(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, EventLoopGroup group, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        final boolean useEpoll = Epoll.isAvailable() && this.server.isUsingNativeTransport();
+        raknetify$logBootstrapStep("abstract-bootstrap.group", group.getClass().getName());
+        return ThreadLocalUtil.isInitializingRaknet()
+                ? original.call(instance, useEpoll ? RaknetifyEventLoops.EPOLL_EVENT_LOOP_GROUP.get() : RaknetifyEventLoops.NIO_EVENT_LOOP_GROUP.get())
+                : original.call(instance, group);
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;group(Lio/netty/channel/EventLoopGroup;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractGroupSocketAddress(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, EventLoopGroup group, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        return redirectAbstractGroup(instance, group, original);
+    }
+
     @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;channel(Ljava/lang/Class;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false))
     private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectChannel(ServerBootstrap instance, Class<? extends ServerSocketChannel> aClass, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
         final boolean useEpoll = Epoll.isAvailable() && this.server.isUsingNativeTransport();
+        raknetify$logBootstrapStep("server-bootstrap.channel", aClass.getName());
         return ThreadLocalUtil.isInitializingRaknet()
                 ? instance.channelFactory(() -> {
+            raknetify$logBootstrapStep("server-bootstrap.channelFactory", useEpoll ? "epoll-raknet" : "nio-raknet");
             RakNetServerChannel channel = new RakNetServerChannel(() -> {
                 final DatagramChannel channel1 = useEpoll ? new EpollDatagramChannel() : new NioDatagramChannel();
                 channel1.config().setOption(ChannelOption.SO_REUSEADDR, true);
@@ -181,6 +230,70 @@ public abstract class MixinServerNetworkIo {
             return channel;
         })
                 : original.call(instance, aClass);
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;channel(Ljava/lang/Class;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectChannelSocketAddress(ServerBootstrap instance, Class<? extends ServerSocketChannel> aClass, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        return redirectChannel(instance, aClass, original);
+    }
+
+    @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;channel(Ljava/lang/Class;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractChannel(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, Class<? extends ServerSocketChannel> aClass, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        final boolean useEpoll = Epoll.isAvailable() && this.server.isUsingNativeTransport();
+        raknetify$logBootstrapStep("abstract-bootstrap.channel", aClass.getName());
+        return ThreadLocalUtil.isInitializingRaknet()
+                ? instance.channelFactory(() -> {
+            raknetify$logBootstrapStep("abstract-bootstrap.channelFactory", useEpoll ? "epoll-raknet" : "nio-raknet");
+            RakNetServerChannel channel = new RakNetServerChannel(() -> {
+                final DatagramChannel channel1 = useEpoll ? new EpollDatagramChannel() : new NioDatagramChannel();
+                channel1.config().setOption(ChannelOption.SO_REUSEADDR, true);
+                channel1.config().setOption(ChannelOption.IP_TOS, RakNetConnectionUtil.DEFAULT_IP_TOS);
+                channel1.config().setRecvByteBufAllocator(new FixedRecvByteBufAllocator(Constants.LARGE_MTU + 512).maxMessagesPerRead(128));
+                return channel1;
+            });
+            channel.setProvidedApplicationEventLoop(RaknetifyEventLoops.DEFAULT_EVENT_LOOP_GROUP.get().next());
+            return channel;
+        })
+                : original.call(instance, aClass);
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;channel(Ljava/lang/Class;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractChannelSocketAddress(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, Class<? extends ServerSocketChannel> aClass, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        return redirectAbstractChannel(instance, aClass, original);
+    }
+
+    @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;option(Lio/netty/channel/ChannelOption;Ljava/lang/Object;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractOption(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, ChannelOption<?> option, Object value, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        if (ThreadLocalUtil.isInitializingRaknet() && option == ChannelOption.AUTO_READ && Boolean.FALSE.equals(value)) {
+            raknetify$logBootstrapStep("abstract-bootstrap.option", "forcing AUTO_READ=true");
+            return original.call(instance, option, Boolean.TRUE);
+        }
+        return original.call(instance, option, value);
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;option(Lio/netty/channel/ChannelOption;Ljava/lang/Object;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private AbstractBootstrap<ServerBootstrap, ServerChannel> redirectAbstractOptionSocketAddress(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, ChannelOption<?> option, Object value, Operation<AbstractBootstrap<ServerBootstrap, ServerChannel>> original) {
+        return redirectAbstractOption(instance, option, value, original);
+    }
+
+    @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;bind()Lio/netty/channel/ChannelFuture;", remap = false), require = 0, remap = false)
+    private ChannelFuture redirectAbstractBind(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, Operation<ChannelFuture> original) {
+        return raknetify$forceAutoRead(original.call(instance), "abstract-bootstrap.bind");
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;bind()Lio/netty/channel/ChannelFuture;", remap = false), require = 0, remap = false)
+    private ChannelFuture redirectAbstractBindSocketAddress(AbstractBootstrap<ServerBootstrap, ServerChannel> instance, Operation<ChannelFuture> original) {
+        return raknetify$forceAutoRead(original.call(instance), "abstract-bootstrap.bind(SocketAddress)");
+    }
+
+    @WrapOperation(method = "bind", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;bind()Lio/netty/channel/ChannelFuture;", remap = false), require = 0, remap = false)
+    private ChannelFuture redirectServerBootstrapBind(ServerBootstrap instance, Operation<ChannelFuture> original) {
+        return raknetify$forceAutoRead(original.call(instance), "server-bootstrap.bind");
+    }
+
+    @WrapOperation(method = "bind(Ljava/net/SocketAddress;)V", at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/ServerBootstrap;bind()Lio/netty/channel/ChannelFuture;", remap = false), require = 0, remap = false)
+    private ChannelFuture redirectServerBootstrapBindSocketAddress(ServerBootstrap instance, Operation<ChannelFuture> original) {
+        return raknetify$forceAutoRead(original.call(instance), "server-bootstrap.bind(SocketAddress)");
     }
 
 }

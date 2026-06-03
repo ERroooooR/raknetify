@@ -34,6 +34,7 @@ import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
+import io.netty.util.AttributeKey;
 import io.netty.channel.epoll.EpollDatagramChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.kqueue.KQueueDatagramChannel;
@@ -47,12 +48,18 @@ import network.ycc.raknet.RakNet;
 public class RakNetFabricConnectionUtil {
 
     public static final String NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE = "raknetify-multi-channel-packet-cature";
+    private static final AttributeKey<Boolean> RAKNETIFY_INITIALIZED = AttributeKey.valueOf("raknetify:fabric-initialized");
+    private static final AttributeKey<Boolean> RAKNETIFY_POST_INITIALIZED = AttributeKey.valueOf("raknetify:fabric-post-initialized");
 
     private RakNetFabricConnectionUtil() {
     }
 
     public static void initChannel(Channel channel) {
         if (channel.config() instanceof RakNet.Config) {
+            if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_INITIALIZED).get())) {
+                return;
+            }
+            channel.attr(RAKNETIFY_INITIALIZED).set(true);
             RakNetConnectionUtil.initChannel(channel);
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID));
         }
@@ -60,6 +67,10 @@ public class RakNetFabricConnectionUtil {
 
     public static void postInitChannel(Channel channel, boolean isClientSide) {
         if (channel.config() instanceof RakNet.Config) {
+            if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_POST_INITIALIZED).get())) {
+                return;
+            }
+            channel.attr(RAKNETIFY_POST_INITIALIZED).set(true);
             ViaFabricCompatInjector.inject(channel, isClientSide);
             channel.pipeline().replace("timeout", "timeout", new ChannelDuplexHandler()); // no-op
             channel.pipeline().replace("splitter", "splitter", new ChannelDuplexHandler()); // no-op

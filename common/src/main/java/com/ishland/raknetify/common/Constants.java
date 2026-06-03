@@ -34,7 +34,11 @@ public class Constants {
     public static final String RAKNET_GATE_LARGE_MTU_PREFIX = "raknetgl;";
     public static final int RAKNET_PING_PACKET_ID = 0xFA;
     public static final int RAKNET_ROUTE_HINT_PACKET_ID = 0xFE;
-    public static final byte RAKNET_ROUTE_HINT_VERSION = 1;
+    public static final byte RAKNET_ROUTE_HINT_VERSION = 2;
+    public static final int RAKNET_ROUTE_HINT_TOKEN_LENGTH = 16;
+    public static final int RAKNET_ROUTE_HINT_RETRIES = 4;
+    public static final int RAKNET_ROUTE_HINT_RETRY_DELAY_MILLIS = 50;
+    public static final int RAKNET_ROUTE_HINT_REFRESH_MILLIS = 5000;
     public static final String RAKNET_ROUTE_HINT_MAGIC = "GATE_RAKNET_ROUTE";
     public static final int RAKNET_GAME_PACKET_ID = 0xFD;
     public static final int RAKNET_STREAMING_COMPRESSION_PACKET_ID = 0xED;

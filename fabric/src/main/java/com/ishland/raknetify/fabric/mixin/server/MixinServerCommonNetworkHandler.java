@@ -59,12 +59,12 @@ public abstract class MixinServerCommonNetworkHandler implements ServerCommonPac
         return Util.getMeasuringTimeMs();
     }
 
-    @WrapWithCondition(method = "onKeepAlive", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/network/ServerCommonNetworkHandler;disconnect(Lnet/minecraft/text/Text;)V"))
+    @WrapWithCondition(method = "onKeepAlive", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/network/ServerCommonNetworkHandler;disconnect(Lnet/minecraft/text/Text;)V"), require = 0)
     private boolean stopTimeoutPlayersOnKeepAlive(ServerCommonNetworkHandler instance, Text reason) {
         return !(((IClientConnection) MultiVersionUtil.ServerPlayNetworkHandler$connection.get((ServerCommonNetworkHandler) (Object) this)).getChannel().config() instanceof RakNet.Config);
     }
 
-    @WrapWithCondition(method = "onKeepAlive", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerCommonNetworkHandler;latency:I", opcode = Opcodes.PUTFIELD))
+    @WrapWithCondition(method = "onKeepAlive", at = @At(value = "FIELD", target = "Lnet/minecraft/server/network/ServerCommonNetworkHandler;latency:I", opcode = Opcodes.PUTFIELD), require = 0)
     private boolean redirectPingStoring(ServerCommonNetworkHandler instance, int value) {
         return !(((IClientConnection) MultiVersionUtil.ServerPlayNetworkHandler$connection.get((ServerCommonNetworkHandler) (Object) this)).getChannel().config() instanceof RakNet.Config);
     }

@@ -29,10 +29,16 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.VersionParsingException;
 import net.fabricmc.loader.api.metadata.version.VersionPredicate;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.MethodNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
+import org.spongepowered.asm.service.MixinService;
 
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import java.io.IOException;
 import java.util.List;
 import java.util.Set;
 
@@ -48,14 +54,18 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
     public static final boolean AFTER_1_21_10;
 
     private static final boolean CONNECTOR_PRESENT;
+    private static final boolean KRYPTON_PRESENT;
 
     static {
         boolean connectorPresent = false;
+        boolean kryptonPresent = false;
         try {
             connectorPresent = FabricLoader.getInstance().isModLoaded("connector");
+            kryptonPresent = FabricLoader.getInstance().isModLoaded("krypton");
         } catch (Throwable ignored) {
         }
         CONNECTOR_PRESENT = connectorPresent;
+        KRYPTON_PRESENT = kryptonPresent;
     }
 
     static {
@@ -104,8 +114,18 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
         }
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerPlayNetworkHandler1_20_1"))
             return !AFTER_1_20_1;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.common.encryption.MixinClientConnection"))
+            return hasMethodWithDescriptor(targetClassName, Type.VOID_TYPE, Type.getType(Cipher.class), Type.getType(Cipher.class));
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.common.encryption.MixinClientConnectionSecretKey"))
+            return hasMethodWithDescriptor(targetClassName, Type.VOID_TYPE, Type.getType(SecretKey.class));
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.common.quirks.MixinSampleSubscriptionTracker"))
             return !CONNECTOR_PRESENT;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerConnectionListenerConnector"))
+            return CONNECTOR_PRESENT;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerConnectionListener1Connector"))
+            return CONNECTOR_PRESENT;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.compat.krypton.MixinServerLoginNetworkHandler"))
+            return KRYPTON_PRESENT;
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinServerCommonNetworkHandler"))
             return AFTER_1_20_1;
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.server.MixinPlayerManager1_20_2"))
@@ -117,6 +137,21 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.access.INetworkState1_20_4"))
             return !AFTER_1_20_4;
         return true;
+    }
+
+    private static boolean hasMethodWithDescriptor(String targetClassName, Type returnType, Type... argumentTypes) {
+        final String descriptor = Type.getMethodDescriptor(returnType, argumentTypes);
+        try {
+            final ClassNode classNode = MixinService.getService().getBytecodeProvider().getClassNode(targetClassName.replace('.', '/'));
+            for (MethodNode method : classNode.methods) {
+                if (method.desc.equals(descriptor)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (ClassNotFoundException | IOException e) {
+            return false;
+        }
     }
 
     @Override
@@ -136,6 +171,5 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-
     }
 }

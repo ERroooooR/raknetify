@@ -36,10 +36,10 @@ import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import io.netty.bootstrap.AbstractBootstrap;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.FixedRecvByteBufAllocator;
-import io.netty.channel.ReflectiveChannelFactory;
 import io.netty.channel.epoll.Epoll;
 import io.netty.channel.epoll.EpollDatagramChannel;
 import io.netty.channel.socket.DatagramChannel;
@@ -61,6 +61,9 @@ public class MixinCCConnect {
     @WrapOperation(method = {"connect(Ljava/net/InetSocketAddress;Lnet/minecraft/network/NetworkingBackend;Lnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_52271(Ljava/net/InetSocketAddress;ZLnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_10753(Ljava/net/InetSocketAddress;Z)Lnet/minecraft/network/ClientConnection;", "method_10753"}, at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/Bootstrap;group(Lio/netty/channel/EventLoopGroup;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 1)
     private static AbstractBootstrap<Bootstrap, Channel> redirectGroup(Bootstrap instance, EventLoopGroup eventLoopGroup, Operation<AbstractBootstrap<Bootstrap, Channel>> original, InetSocketAddress address, @Share("raknetify$eventLoop") LocalRef<EventLoopGroup> raknetify$eventLoop) {
         raknetify$eventLoop.set(eventLoopGroup);
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            System.out.println("Raknetify: client bootstrap.group -> " + eventLoopGroup.getClass().getName() + " for " + address);
+        }
         return ThreadLocalUtil.isInitializingRaknet()
                 ? original.call(instance, RaknetifyEventLoops.DEFAULT_CLIENT_EVENT_LOOP_GROUP.get())
                 : original.call(instance, eventLoopGroup);
@@ -72,8 +75,12 @@ public class MixinCCConnect {
         EventLoopGroup eventLoopGroup = raknetify$eventLoop.get();
         final boolean initializingRaknetLargeMTU = ThreadLocalUtil.isInitializingRaknetLargeMTU();
         final String raknetRouteHintHost = ThreadLocalUtil.getRaknetRouteHintHost();
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            System.out.println("Raknetify: client bootstrap.channel -> " + aClass.getName() + " for " + address);
+        }
         return ThreadLocalUtil.isInitializingRaknet()
                 ? instance.channelFactory(() -> {
+                    System.out.println("Raknetify: client bootstrap.channelFactory -> raknet for " + address);
                     final RakNetClientThreadedChannel channel = new RakNetClientThreadedChannel(() -> {
                         final DatagramChannel channel1 = RakNetFabricConnectionUtil.fromSocketChannel(aClass);
                         channel1.config().setOption(ChannelOption.IP_TOS, RakNetConnectionUtil.DEFAULT_IP_TOS);
@@ -89,6 +96,31 @@ public class MixinCCConnect {
                     return channel;
                 })
                 : original.call(instance, aClass);
+    }
+
+    @Dynamic("method_10753, method_52271 for compat")
+    @WrapOperation(method = {"connect(Ljava/net/InetSocketAddress;Lnet/minecraft/network/NetworkingBackend;Lnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_52271(Ljava/net/InetSocketAddress;ZLnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_10753(Ljava/net/InetSocketAddress;Z)Lnet/minecraft/network/ClientConnection;", "method_10753"}, at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;option(Lio/netty/channel/ChannelOption;Ljava/lang/Object;)Lio/netty/bootstrap/AbstractBootstrap;", remap = false), require = 0, remap = false)
+    private static AbstractBootstrap<Bootstrap, Channel> redirectOption(AbstractBootstrap<Bootstrap, Channel> instance, ChannelOption<?> option, Object value, Operation<AbstractBootstrap<Bootstrap, Channel>> original) {
+        if (ThreadLocalUtil.isInitializingRaknet() && option == ChannelOption.AUTO_READ && Boolean.FALSE.equals(value)) {
+            System.out.println("Raknetify: client bootstrap.option -> forcing AUTO_READ=true");
+            return original.call(instance, option, Boolean.TRUE);
+        }
+        return original.call(instance, option, value);
+    }
+
+    @Dynamic("method_10753, method_52271 for compat")
+    @WrapOperation(method = {"connect(Ljava/net/InetSocketAddress;Lnet/minecraft/network/NetworkingBackend;Lnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_52271(Ljava/net/InetSocketAddress;ZLnet/minecraft/network/ClientConnection;)Lio/netty/channel/ChannelFuture;", "method_10753(Ljava/net/InetSocketAddress;Z)Lnet/minecraft/network/ClientConnection;", "method_10753"}, at = @At(value = "INVOKE", target = "Lio/netty/bootstrap/AbstractBootstrap;connect(Ljava/net/SocketAddress;)Lio/netty/channel/ChannelFuture;", remap = false), require = 0, remap = false)
+    private static ChannelFuture redirectConnect(AbstractBootstrap<Bootstrap, Channel> instance, java.net.SocketAddress address, Operation<ChannelFuture> original) {
+        final ChannelFuture future = original.call(instance, address);
+        if (ThreadLocalUtil.isInitializingRaknet()) {
+            future.addListener(listener -> {
+                if (listener.isSuccess()) {
+                    future.channel().config().setAutoRead(true);
+                    System.out.println("Raknetify: client bootstrap.connect -> forced autoRead=true on " + future.channel().getClass().getName());
+                }
+            });
+        }
+        return future;
     }
 
 }

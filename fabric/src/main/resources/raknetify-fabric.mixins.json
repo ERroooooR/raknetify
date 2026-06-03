@@ -24,6 +24,7 @@
     "common.MixinClientConnection1",
     "common.MixinClientConnection1_20_2",
     "common.encryption.MixinClientConnection",
+    "common.encryption.MixinClientConnectionSecretKey",
     "common.encryption.MixinPacketDecryptor",
     "common.encryption.MixinPacketEncryptionManager",
     "common.encryption.MixinPacketEncryptor",
@@ -36,6 +37,8 @@
     "server.MixinPlayerManager1_20_2",
     "server.MixinServerCommonNetworkHandler",
     "server.MixinServerLoginNetworkHandler",
+    "server.MixinServerConnectionListenerConnector",
+    "server.MixinServerConnectionListener1Connector",
     "server.MixinServerNetworkIo",
     "server.MixinServerNetworkIo1",
     "server.MixinServerPlayNetworkHandler1_20_1"

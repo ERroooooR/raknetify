@@ -44,7 +44,7 @@ public class MixinServerLoginNetworkHandler {
     @Shadow @Final public ClientConnection connection;
 
     @Dynamic
-    @WrapWithCondition(method = {"method_14384()V", "tickVerify"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V"))
+    @WrapWithCondition(method = {"method_14384()V", "tickVerify"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V"), require = 0)
     private boolean stopCompressionIfStreamingCompressionExists(ClientConnection instance, Packet<?> packet, PacketCallbacks callbacks) {
         if (packet instanceof LoginCompressionS2CPacket) {
             final MultiChannelingStreamingCompression compression = ((IClientConnection) this.connection).getChannel().pipeline().get(MultiChannelingStreamingCompression.class);

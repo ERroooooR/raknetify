@@ -27,6 +27,7 @@ package com.ishland.raknetify.common.connection;
 import com.ishland.raknetify.common.Constants;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
+import io.netty.util.AttributeKey;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import network.ycc.raknet.RakNet;
 import network.ycc.raknet.client.channel.RakNetClientThreadedChannel;
@@ -43,11 +44,17 @@ import static com.ishland.raknetify.common.util.ReflectionUtil.accessible;
 
 public class RakNetConnectionUtil {
 
+    private static final AttributeKey<Boolean> RAKNETIFY_INITIALIZED = AttributeKey.valueOf("raknetify:initialized");
+    private static final AttributeKey<Boolean> RAKNETIFY_PARENT_INITIALIZED = AttributeKey.valueOf("raknetify:parent-initialized");
+
     public static final int IP_TOS_LOWDELAY = 0b00010000;
     public static final int IP_TOS_THROUGHPUT = 0b00001000;
     public static final int IP_TOS_RELIABILITY = 0b00000100;
 
-    public static final int DEFAULT_IP_TOS = IP_TOS_LOWDELAY | IP_TOS_THROUGHPUT;
+    public static final int DEFAULT_IP_TOS = configuredInt("raknetify.ipTos", IP_TOS_LOWDELAY | IP_TOS_THROUGHPUT, 0, 255);
+    public static final int DEFAULT_RETRY_DELAY_MILLIS = configuredInt("raknetify.retryDelayMillis", 25, 1, 1000);
+    public static final int DEFAULT_READ_TIMEOUT_SECONDS = configuredInt("raknetify.readTimeoutSeconds", 15, 1, 120);
+    public static final boolean DEFAULT_NACK_ENABLED = Boolean.parseBoolean(System.getProperty("raknetify.nackEnabled", "true"));
 
     private RakNetConnectionUtil() {
     }
@@ -63,11 +70,16 @@ public class RakNetConnectionUtil {
         if (channel.config() instanceof RakNet.Config config) {
             config.setMaxQueuedBytes(Constants.MAX_QUEUED_SIZE);
             config.setMaxPendingFrameSets(Constants.MAX_PENDING_FRAME_SETS);
-            config.setRetryDelayNanos(TimeUnit.NANOSECONDS.convert(50, TimeUnit.MILLISECONDS));
+            config.setRetryDelayNanos(TimeUnit.NANOSECONDS.convert(DEFAULT_RETRY_DELAY_MILLIS, TimeUnit.MILLISECONDS));
             config.setDefaultPendingFrameSets(Constants.DEFAULT_PENDING_FRAME_SETS);
-            config.setNACKEnabled(false);
+            config.setNACKEnabled(DEFAULT_NACK_ENABLED);
             config.setNoDelayEnabled(false);
 //            config.setIgnoreResendGauge(true);
+
+            if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_INITIALIZED).get())) {
+                return;
+            }
+            channel.attr(RAKNETIFY_INITIALIZED).set(true);
 
             initRaknetChannel(channel);
 
@@ -93,9 +105,16 @@ public class RakNetConnectionUtil {
             channel = appChannel;
             threadedReadHandlerName = null;
         }
+        if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_PARENT_INITIALIZED).get())) {
+            return;
+        }
+        channel.attr(RAKNETIFY_PARENT_INITIALIZED).set(true);
         channel.pipeline().addLast(new ChannelInitializer<>() {
             @Override
             protected void initChannel(Channel ch) {
+                if (ch.pipeline().get("raknetify-metrics-sync") != null) {
+                    return;
+                }
                 final RakNet.Config config = (RakNet.Config) ch.config();
                 final SimpleMetricsLogger simpleMetricsLogger = new SimpleMetricsLogger();
                 config.setMetrics(simpleMetricsLogger);
@@ -110,9 +129,18 @@ public class RakNetConnectionUtil {
                     ch.pipeline().addLast("raknetify-metrics-sync", metricsSynchronizationHandler);
                     ch.pipeline().addLast("raknetify-synchronization-layer", synchronizationLayer);
                 }
-                ch.pipeline().addFirst("raknetify-timeout", new ReadTimeoutHandler(15));
+                ch.pipeline().addFirst("raknetify-timeout", new ReadTimeoutHandler(DEFAULT_READ_TIMEOUT_SECONDS));
             }
         });
+    }
+
+    private static int configuredInt(String name, int defaultValue, int min, int max) {
+        final int value = Integer.getInteger(name, defaultValue);
+        if (value < min || value > max) {
+            System.err.println("Raknetify: ignoring " + name + "=" + value + " outside " + min + ".." + max);
+            return defaultValue;
+        }
+        return value;
     }
 
 //    public static void postInitChannel(Channel channel, boolean isClientSide) {
