@@ -57,11 +57,21 @@ public class CustomPayloadChannel {
         @Override
         public int getChannelOverride(ByteBuf origBuf, boolean suppressWarning) {
             ByteBuf buf = origBuf.slice();
-            final int packetId = MathUtil.readVarInt(buf);
+            if (buf.readableBytes() < 1) return 0;
+            final int packetId;
+            try {
+                packetId = MathUtil.readVarInt(buf);
+            } catch (RuntimeException e) {
+                return 0;
+            }
             if (isCustomPayload.test(packetId)) {
-                final String identifier = MathUtil.readString(buf); // we assume modern custom payloads
-                if (Constants.DEBUG) System.out.println("Raknetify: Handling custom payload: " + identifier);
-                return identifier2channel.getInt(identifier);
+                try {
+                    final String identifier = MathUtil.readString(buf); // we assume modern custom payloads
+                    if (Constants.DEBUG) System.out.println("Raknetify: Handling custom payload: " + identifier);
+                    return identifier2channel.getInt(identifier);
+                } catch (RuntimeException e) {
+                    return 0;
+                }
             } else {
                 return 0;
             }
