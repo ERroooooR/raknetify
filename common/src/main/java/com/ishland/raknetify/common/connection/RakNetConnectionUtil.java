@@ -51,7 +51,7 @@ public class RakNetConnectionUtil {
     public static final int IP_TOS_THROUGHPUT = 0b00001000;
     public static final int IP_TOS_RELIABILITY = 0b00000100;
 
-    public static final int DEFAULT_IP_TOS = configuredInt("raknetify.ipTos", IP_TOS_LOWDELAY | IP_TOS_THROUGHPUT, 0, 255);
+    public static final int DEFAULT_IP_TOS = configuredInt("raknetify.ipTos", 0xA0, 0, 255); // DSCP CS5
     public static final int DEFAULT_RETRY_DELAY_MILLIS = configuredInt("raknetify.retryDelayMillis", 50, 1, 1000);
     public static final int DEFAULT_READ_TIMEOUT_SECONDS = configuredInt("raknetify.readTimeoutSeconds", 15, 1, 120);
     public static final boolean DEFAULT_NACK_ENABLED = Boolean.parseBoolean(System.getProperty("raknetify.nackEnabled", "true"));
