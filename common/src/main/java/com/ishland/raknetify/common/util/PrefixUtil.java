@@ -42,6 +42,34 @@ public class PrefixUtil {
         }
     }
 
+    /**
+     * Strips a trailing IPv4 port from a host string. IPv6 addresses enclosed
+     * in brackets (e.g., {@code [::1]:25565}) are handled by returning the
+     * unbracketed address. IPv6 addresses without brackets are returned as-is.
+     */
+    public static String stripPort(String host) {
+        if (host == null || host.isEmpty()) {
+            return host;
+        }
+        // IPv6 bracketed: [::1]:25565 -> ::1
+        if (host.startsWith("[")) {
+            int end = host.lastIndexOf(']');
+            if (end > 0) {
+                return host.substring(1, end);
+            }
+            return host;
+        }
+        // IPv4/hostname: check last colon for numeric port
+        int lastColon = host.lastIndexOf(':');
+        if (lastColon > 0) {
+            String portPart = host.substring(lastColon + 1);
+            if (portPart.chars().allMatch(Character::isDigit)) {
+                return host.substring(0, lastColon);
+            }
+        }
+        return host;
+    }
+
     public record Info(boolean useRakNet, String stripped, boolean largeMTU, boolean gateRouteHint) {
     }
 

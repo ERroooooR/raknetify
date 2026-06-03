@@ -81,7 +81,7 @@ public abstract class MixinClientConnection {
 
     @Redirect(method = "*", at = @At(value = "INVOKE", target = "Lio/netty/channel/Channel;isOpen()Z", remap = false))
     private boolean redirectIsOpen(Channel instance) {
-        return this.channel != null && (this.channel.isOpen() && !this.isClosing);
+        return this.channel != null && this.channel.isOpen();
     }
 
 //    @Inject(method = "channelActive", at = @At("HEAD"))

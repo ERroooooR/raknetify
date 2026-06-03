@@ -45,7 +45,7 @@ public class MixinMultiplayerServerListPinger1_20_2 {
     @WrapOperation(method = {"add", "method_3003"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;method_10753(Ljava/net/InetSocketAddress;ZLnet/minecraft/class_8743;)Lnet/minecraft/network/ClientConnection;"))
     private ClientConnection redirectConnect(InetSocketAddress address, boolean useEpoll, DebugSampleLog log, Operation<ClientConnection> original, ServerInfo entry, Runnable runnable) {
         final PrefixUtil.Info info = PrefixUtil.getInfo(entry.address);
-        return info.useRakNet() ? RakNetClientConnectionUtil.connect(address, useEpoll, info.largeMTU(), original, true, info.gateRouteHint() ? info.stripped() : null) : original.call(address, useEpoll, null);
+        return info.useRakNet() ? RakNetClientConnectionUtil.connect(address, useEpoll, info.largeMTU(), original, true, info.gateRouteHint() ? PrefixUtil.stripPort(info.stripped()) : null) : original.call(address, useEpoll, null);
     }
 
 }
