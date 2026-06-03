@@ -26,10 +26,10 @@ package com.ishland.raknetify.fabric.mixin.server;
 
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
 import com.ishland.raknetify.fabric.mixin.access.IClientConnection;
-import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
-import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import net.minecraft.network.ClientConnection;
-import net.minecraft.server.MinecraftServer;
+import net.minecraft.network.PacketCallbacks;
+import net.minecraft.network.packet.Packet;
 import net.minecraft.server.network.ServerLoginNetworkHandler;
 import org.spongepowered.asm.mixin.Dynamic;
 import org.spongepowered.asm.mixin.Final;
@@ -42,17 +42,15 @@ public class MixinServerLoginNetworkHandler {
 
     @Shadow @Final public ClientConnection connection;
 
-    @Shadow @Final private MinecraftServer server;
-
     @Dynamic
-    @WrapOperation(method = {"method_14384()V", "tickVerify"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/server/MinecraftServer;getNetworkCompressionThreshold()I"), require = 1)
-    private int stopCompressionIfStreamingCompressionExists(MinecraftServer server, Operation<Integer> original) {
+    @WrapWithCondition(method = {"method_14384()V", "tickVerify"}, at = @At(value = "INVOKE", target = "Lnet/minecraft/network/ClientConnection;send(Lnet/minecraft/network/packet/Packet;Lnet/minecraft/network/PacketCallbacks;)V"))
+    private boolean stopCompressionIfStreamingCompressionExists(ClientConnection instance, Packet<?> packet, PacketCallbacks callbacks) {
         final MultiChannelingStreamingCompression compression = ((IClientConnection) this.connection).getChannel().pipeline().get(MultiChannelingStreamingCompression.class);
         if (compression != null && compression.isActive()) {
             System.out.println("Raknetify: Preventing vanilla compression as streaming compression is enabled");
-            return -1;
+            return false;
         }
-        return original.call(server);
+        return true;
     }
 
 }
