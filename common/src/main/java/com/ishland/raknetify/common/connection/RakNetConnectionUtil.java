@@ -26,7 +26,10 @@ package com.ishland.raknetify.common.connection;
 
 import com.ishland.raknetify.common.Constants;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerAdapter;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.AttributeKey;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import network.ycc.raknet.RakNet;
@@ -130,6 +133,15 @@ public class RakNetConnectionUtil {
                     ch.pipeline().addLast("raknetify-synchronization-layer", synchronizationLayer);
                 }
                 ch.pipeline().addFirst("raknetify-timeout", new ReadTimeoutHandler(DEFAULT_READ_TIMEOUT_SECONDS));
+                ch.pipeline().addAfter("raknetify-timeout", "raknetify-timeout-logger", new ChannelHandlerAdapter() {
+                    @Override
+                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                        if (cause instanceof ReadTimeoutException) {
+                            System.err.println("Raknetify: read timeout after " + DEFAULT_READ_TIMEOUT_SECONDS + "s, closing connection " + ctx.channel().remoteAddress());
+                        }
+                        ctx.fireExceptionCaught(cause);
+                    }
+                });
             }
         });
     }
