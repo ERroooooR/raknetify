@@ -58,6 +58,9 @@ public class RakNetConnectionUtil {
     public static final int DEFAULT_RETRY_DELAY_MILLIS = configuredInt("raknetify.retryDelayMillis", 50, 1, 1000);
     public static final int DEFAULT_READ_TIMEOUT_SECONDS = configuredInt("raknetify.readTimeoutSeconds", 15, 1, 120);
     public static final boolean DEFAULT_NACK_ENABLED = Boolean.parseBoolean(System.getProperty("raknetify.nackEnabled", "true"));
+    public static final boolean DEFAULT_ADAPTIVE_TRANSPORT = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveTransport", "true"));
+    public static final boolean DEFAULT_ADAPTIVE_DSCP = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveDscp", "false"));
+    public static final int DEFAULT_PROTOCOL_VERSION = configuredInt("raknetify.protocolVersion", 11, 9, 12);
 
     private RakNetConnectionUtil() {
     }
@@ -77,6 +80,11 @@ public class RakNetConnectionUtil {
             config.setDefaultPendingFrameSets(Constants.DEFAULT_PENDING_FRAME_SETS);
             config.setNACKEnabled(DEFAULT_NACK_ENABLED);
             config.setNoDelayEnabled(false);
+            config.setAdaptiveTransportEnabled(DEFAULT_ADAPTIVE_TRANSPORT);
+            config.setAdaptiveDscpEnabled(DEFAULT_ADAPTIVE_DSCP);
+            if (config.getProtocolVersion() < DEFAULT_PROTOCOL_VERSION) {
+                config.setProtocolVersion(DEFAULT_PROTOCOL_VERSION);
+            }
 //            config.setIgnoreResendGauge(true);
 
             if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_INITIALIZED).get())) {

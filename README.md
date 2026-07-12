@@ -27,3 +27,23 @@ under unreliable and rate-limited connections.
   (e.g. `raknet;example.com`)
 - Enjoy!
 
+## Adaptive transport options
+
+The bundled transport defaults to standard RakNet protocol v11 and a 1400-byte MTU. Adaptive
+pacing, rolling loss classification and safe MTU fallback are enabled by default. The following
+JVM properties are available on both client and server:
+
+```text
+-Draknetify.adaptiveTransport=true
+-Draknetify.adaptiveDscp=false
+-Draknetify.protocolVersion=11
+```
+
+Set `raknetify.protocolVersion=12` on both endpoints to negotiate this fork's PLPMTUD and limited
+XOR FEC extensions. Versions 9-11 never send extension packets. FEC activates only for measured
+random loss between 1% and 12%; it remains disabled for burst loss and queue congestion.
+
+`adaptiveDscp` is disabled by default because all players on a server listener share one UDP
+socket. When enabled, the transport aggregates connection votes and uses a 2:1 majority plus a
+30-second cooldown before switching the shared socket between AF41 and CS0.
+
