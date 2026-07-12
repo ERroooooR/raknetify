@@ -270,7 +270,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         int byteSize = 0;
         for (Iterator<Frame> iterator = retainedFrameList.iterator(); iterator.hasNext(); ) {
             Frame frame = iterator.next();
-            if (frame.getReliability().isOrdered && !channelToIgnore.contains(frame.getOrderChannel())) {
+            // Don't drop fragment frames — dropping a single fragment causes the
+            // remote FrameJoiner to hang forever waiting for reassembly, which
+            // eventually triggers the reliable fragment timeout and disconnects the peer.
+            if (frame.getReliability().isOrdered && !channelToIgnore.contains(frame.getOrderChannel()) && !frame.hasSplit()) {
                 final ChannelPromise promise1 = frame.getPromise();
                 if (promise1 != null) promise1.trySuccess();
                 iterator.remove();
