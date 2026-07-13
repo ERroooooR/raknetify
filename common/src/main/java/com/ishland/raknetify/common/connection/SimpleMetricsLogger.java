@@ -28,6 +28,18 @@ import com.ishland.raknetify.common.util.MathUtil;
 import network.ycc.raknet.RakNet;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Locale;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * This implementation is only designed to be modified single-threaded
  */
@@ -53,6 +65,34 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long measureRTTnsStdDev = 0L;
     private volatile long measureBurstTokens = 0L;
     private volatile int currentQueuedBytes = 0;
+    private volatile double adaptivePacingRate;
+    private volatile long adaptiveDeliveryRate;
+    private volatile double adaptiveLossRatio;
+    private volatile long adaptiveAcknowledged;
+    private volatile long adaptiveLost;
+    private volatile String adaptiveLossType = "NONE";
+    private volatile int adaptiveMTU;
+    private volatile long fecRecovered;
+    private volatile long fecParityPackets;
+    private volatile long fecParityBytes;
+    private volatile long fecExpired;
+    private volatile long mtuProbesSent;
+    private volatile long mtuProbesAcknowledged;
+    private volatile long mtuProbesTimedOut;
+    private volatile int adaptiveDscp = -1;
+    private volatile long smallWriteBatches;
+    private volatile long smallWriteFrames;
+    private volatile long smallWriteDelayNanos;
+    private volatile long pacingDelayNanos;
+
+    private static final AtomicBoolean METRICS_FILE_DISABLED = new AtomicBoolean();
+    private static final Path METRICS_FILE = metricsFile();
+    private static final BlockingQueue<String> METRICS_LINES = new ArrayBlockingQueue<>(8192);
+    private static final AtomicLong METRICS_LINES_DROPPED = new AtomicLong();
+
+    static {
+        if (METRICS_FILE != null && !METRICS_FILE_DISABLED.get()) startMetricsWriter();
+    }
 
     @Override
     public void packetsIn(int delta) {
@@ -136,6 +176,57 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         currentQueuedBytes = bytes;
     }
 
+    @Override
+    public void adaptivePacingRate(double packetsPerSecond) { adaptivePacingRate = packetsPerSecond; }
+
+    @Override
+    public void adaptiveDeliveryRate(long bytesPerSecond) { adaptiveDeliveryRate = bytesPerSecond; }
+
+    @Override
+    public void adaptiveLoss(double ratio, long acknowledged, long lost) {
+        adaptiveLossRatio = ratio;
+        adaptiveAcknowledged = acknowledged;
+        adaptiveLost = lost;
+    }
+
+    @Override
+    public void adaptiveLossType(String type) { adaptiveLossType = type; }
+
+    @Override
+    public void adaptiveMTU(int mtu) { adaptiveMTU = mtu; }
+
+    @Override
+    public void fecRecovered(int delta) { fecRecovered += delta; }
+
+    @Override
+    public void fecParity(int packets, int bytes) {
+        fecParityPackets += packets;
+        fecParityBytes += bytes;
+    }
+
+    @Override
+    public void fecExpired(int delta) { fecExpired += delta; }
+
+    @Override
+    public void pathMtuProbeResult(String result, int mtu) {
+        if ("sent".equals(result)) mtuProbesSent++;
+        else if ("acknowledged".equals(result)) mtuProbesAcknowledged++;
+        else if ("timeout".equals(result)) mtuProbesTimedOut++;
+    }
+
+    @Override
+    public void adaptiveDscp(int ipTos) { adaptiveDscp = ipTos; }
+
+    @Override
+    public void smallWriteBatch(int frames, long delayNanos) {
+        smallWriteBatches++;
+        smallWriteFrames += frames;
+        smallWriteDelayNanos = delayNanos;
+    }
+
+    @Override
+    public void pacingDelay(long delayNanos) { pacingDelayNanos = delayNanos; }
+
     // ========== Calculations ==========
 
     private long lastMeasureMillis = System.currentTimeMillis();
@@ -148,6 +239,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
         tickErrorRate();
         tickRXTX(deltaTime);
+        appendMetricsJsonl(measureMillis);
     }
 
     private final DescriptiveStatistics errorStats = new DescriptiveStatistics(16);
@@ -259,6 +351,85 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     public long getBytesIn() {
         return bytesIn;
+    }
+
+    public double getAdaptivePacingRate() { return adaptivePacingRate; }
+    public long getAdaptiveDeliveryRate() { return adaptiveDeliveryRate; }
+    public double getAdaptiveLossRatio() { return adaptiveLossRatio; }
+    public long getAdaptiveAcknowledged() { return adaptiveAcknowledged; }
+    public long getAdaptiveLost() { return adaptiveLost; }
+    public String getAdaptiveLossType() { return adaptiveLossType; }
+    public int getAdaptiveMTU() { return adaptiveMTU; }
+    public long getFecRecovered() { return fecRecovered; }
+    public long getFecParityPackets() { return fecParityPackets; }
+    public long getFecParityBytes() { return fecParityBytes; }
+    public long getFecExpired() { return fecExpired; }
+    public long getMtuProbesSent() { return mtuProbesSent; }
+    public long getMtuProbesAcknowledged() { return mtuProbesAcknowledged; }
+    public long getMtuProbesTimedOut() { return mtuProbesTimedOut; }
+    public int getAdaptiveDscp() { return adaptiveDscp; }
+    public long getSmallWriteBatches() { return smallWriteBatches; }
+    public long getSmallWriteFrames() { return smallWriteFrames; }
+    public long getSmallWriteDelayNanos() { return smallWriteDelayNanos; }
+    public long getPacingDelayNanos() { return pacingDelayNanos; }
+
+    private static Path metricsFile() {
+        final String value = System.getProperty("raknetify.metricsJsonl", "").trim();
+        if (value.isEmpty()) return null;
+        try {
+            return Paths.get(value).toAbsolutePath();
+        } catch (RuntimeException ignored) {
+            METRICS_FILE_DISABLED.set(true);
+            return null;
+        }
+    }
+
+    private void appendMetricsJsonl(long timestamp) {
+        if (METRICS_FILE == null || METRICS_FILE_DISABLED.get()) return;
+        final String line = String.format(Locale.ROOT,
+                "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
+                        "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
+                        "\"pacing_pps\":%.3f,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
+                        "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
+                        "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
+                        "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
+                        "\"dscp\":%d,\"small_write_batches\":%d,\"small_write_frames\":%d," +
+                        "\"small_write_delay_ns\":%d,\"pacing_delay_ns\":%d,\"export_dropped\":%d}%n",
+                timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
+                measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
+                adaptivePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
+                adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
+                fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
+                adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
+                METRICS_LINES_DROPPED.get());
+        if (!METRICS_LINES.offer(line)) {
+            METRICS_LINES_DROPPED.incrementAndGet();
+        }
+    }
+
+    private static void startMetricsWriter() {
+        final Thread writerThread = new Thread(() -> {
+            try {
+                final Path parent = METRICS_FILE.getParent();
+                if (parent != null) Files.createDirectories(parent);
+                try (BufferedWriter writer = Files.newBufferedWriter(METRICS_FILE, StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)) {
+                    while (!Thread.currentThread().isInterrupted()) {
+                        writer.write(METRICS_LINES.take());
+                        String next;
+                        while ((next = METRICS_LINES.poll()) != null) writer.write(next);
+                        writer.flush();
+                    }
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            } catch (IOException | RuntimeException ignored) {
+                METRICS_FILE_DISABLED.set(true);
+                METRICS_LINES.clear();
+            }
+        }, "raknetify-metrics-writer");
+        writerThread.setDaemon(true);
+        writerThread.start();
     }
 
     // ========== Misc ==========

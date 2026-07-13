@@ -75,6 +75,17 @@ public class DebugUtil {
                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                         )).append('\n');
 
+                b.append("Adaptive: %s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, MTU %d"
+                        .formatted(logger.getAdaptiveLossType(), logger.getAdaptivePacingRate(),
+                                logger.getAdaptiveDeliveryRate() / 1024.0,
+                                logger.getAdaptiveLossRatio() * 100.0,
+                                logger.getAdaptiveMTU() > 0 ? logger.getAdaptiveMTU() : config.getMTU()))
+                        .append('\n');
+                b.append("Adaptive recovery: FEC %d/%d protected, expired %d; MTU probes %d/%d/%d"
+                        .formatted(logger.getFecRecovered(), logger.getFecParityPackets(), logger.getFecExpired(),
+                                logger.getMtuProbesSent(), logger.getMtuProbesAcknowledged(),
+                                logger.getMtuProbesTimedOut())).append('\n');
+
                 if (sync != null && sync.isRemoteSupported()) {
                     b.append("Remote Statistics: ERR: %.4f%%, %d tx, %d rx, Burst: %d"
                             .formatted(

@@ -83,6 +83,12 @@ public class DebugHudUtil {
                                                 logger.getMeasureTX(), logger.getMeasureRX(),
                                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                                         ));
+                        consumer.accept(
+                                "[Raknetify] ADP: %s, %.0fpps, %.1fKiB/s, LOSS: %.2f%%, FEC: %d"
+                                        .formatted(logger.getAdaptiveLossType(), logger.getAdaptivePacingRate(),
+                                                logger.getAdaptiveDeliveryRate() / 1024.0,
+                                                logger.getAdaptiveLossRatio() * 100.0,
+                                                logger.getFecRecovered()));
                         if (serverSync != null && serverSync.isRemoteSupported()) {
                             consumer.accept(
                                     "[Raknetify] S: ERR: %.4f%%, %d tx, %d rx, BST: %d"

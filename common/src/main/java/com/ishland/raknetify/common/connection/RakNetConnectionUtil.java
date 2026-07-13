@@ -61,6 +61,9 @@ public class RakNetConnectionUtil {
     public static final boolean DEFAULT_ADAPTIVE_TRANSPORT = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveTransport", "true"));
     public static final boolean DEFAULT_ADAPTIVE_DSCP = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveDscp", "false"));
     public static final int DEFAULT_PROTOCOL_VERSION = configuredInt("raknetify.protocolVersion", 11, 9, 12);
+    public static final int DEFAULT_ADAPTIVE_MIN_PPS = configuredInt("raknetify.adaptiveMinPps", 50, 1, 100_000);
+    public static final int DEFAULT_ADAPTIVE_MAX_PPS = configuredInt("raknetify.adaptiveMaxPps", 2000, 1, 100_000);
+    public static final int DEFAULT_SMALL_WRITE_COALESCE_MICROS = configuredInt("raknetify.smallWriteCoalesceMicros", 250, 0, 100_000);
 
     private RakNetConnectionUtil() {
     }
@@ -82,6 +85,9 @@ public class RakNetConnectionUtil {
             config.setNoDelayEnabled(false);
             config.setAdaptiveTransportEnabled(DEFAULT_ADAPTIVE_TRANSPORT);
             config.setAdaptiveDscpEnabled(DEFAULT_ADAPTIVE_DSCP);
+            config.setAdaptiveMinPps(Math.min(DEFAULT_ADAPTIVE_MIN_PPS, DEFAULT_ADAPTIVE_MAX_PPS));
+            config.setAdaptiveMaxPps(Math.max(DEFAULT_ADAPTIVE_MIN_PPS, DEFAULT_ADAPTIVE_MAX_PPS));
+            config.setSmallWriteCoalesceMicros(DEFAULT_SMALL_WRITE_COALESCE_MICROS);
             if (config.getProtocolVersion() < DEFAULT_PROTOCOL_VERSION) {
                 config.setProtocolVersion(DEFAULT_PROTOCOL_VERSION);
             }

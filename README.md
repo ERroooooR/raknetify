@@ -37,6 +37,10 @@ JVM properties are available on both client and server:
 -Draknetify.adaptiveTransport=true
 -Draknetify.adaptiveDscp=false
 -Draknetify.protocolVersion=11
+-Draknetify.adaptiveMinPps=50
+-Draknetify.adaptiveMaxPps=2000
+-Draknetify.smallWriteCoalesceMicros=250
+-Draknetify.metricsJsonl=/path/to/raknetify-metrics.jsonl
 ```
 
 Set `raknetify.protocolVersion=12` on both endpoints to negotiate this fork's PLPMTUD and limited
@@ -46,4 +50,11 @@ random loss between 1% and 12%; it remains disabled for burst loss and queue con
 `adaptiveDscp` is disabled by default because all players on a server listener share one UDP
 socket. When enabled, the transport aggregates connection votes and uses a 2:1 majority plus a
 30-second cooldown before switching the shared socket between AF41 and CS0.
+
+`metricsJsonl` is optional and disabled when unset. When configured, each connection appends one
+JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
+loss classification, active MTU, FEC effectiveness, PLPMTUD outcomes, DSCP and small-write batching.
+Use a separate output file per process. File errors disable the recorder without affecting traffic.
+Records enter a bounded non-blocking queue and a daemon writer flushes them off the Netty event
+loop. `export_dropped` reports queue saturation, so slow storage is visible without stalling players.
 
