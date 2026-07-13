@@ -84,6 +84,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long smallWriteFrames;
     private volatile long smallWriteDelayNanos;
     private volatile long pacingDelayNanos;
+    private volatile String congestionMode = "STARTUP";
+    private volatile long congestionWindowBytes;
+    private volatile long inFlightBytes;
+    private volatile long bandwidthBytesPerSecond;
+    private volatile long ackAggregationBytes;
+    private volatile double ecnCeRatio;
+    private volatile String pathMtuState = "SEARCHING";
+    private volatile int pathMtuProbe;
+    private volatile int pathMtuMaximum;
+    private volatile int fecDataShards;
+    private volatile int fecParityShards;
+    private volatile double fecRecoveryRatio;
 
     private static final AtomicBoolean METRICS_FILE_DISABLED = new AtomicBoolean();
     private static final Path METRICS_FILE = metricsFile();
@@ -226,6 +238,33 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void pacingDelay(long delayNanos) { pacingDelayNanos = delayNanos; }
+
+    @Override
+    public void congestionControl(String mode, long congestionWindowBytes, long inFlightBytes,
+                                  long bandwidthBytesPerSecond, long ackAggregationBytes,
+                                  double ecnCeRatio) {
+        this.congestionMode = mode;
+        this.congestionWindowBytes = congestionWindowBytes;
+        this.inFlightBytes = inFlightBytes;
+        this.bandwidthBytesPerSecond = bandwidthBytesPerSecond;
+        this.ackAggregationBytes = ackAggregationBytes;
+        this.ecnCeRatio = ecnCeRatio;
+    }
+
+    @Override
+    public void pathMtuState(String state, int confirmedMtu, int probeMtu, int maximumMtu) {
+        this.pathMtuState = state;
+        this.adaptiveMTU = confirmedMtu;
+        this.pathMtuProbe = probeMtu;
+        this.pathMtuMaximum = maximumMtu;
+    }
+
+    @Override
+    public void fecBudget(int dataShards, int parityShards, double recoveryRatio) {
+        this.fecDataShards = dataShards;
+        this.fecParityShards = parityShards;
+        this.fecRecoveryRatio = recoveryRatio;
+    }
 
     // ========== Calculations ==========
 
@@ -372,6 +411,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getSmallWriteFrames() { return smallWriteFrames; }
     public long getSmallWriteDelayNanos() { return smallWriteDelayNanos; }
     public long getPacingDelayNanos() { return pacingDelayNanos; }
+    public String getCongestionMode() { return congestionMode; }
+    public long getCongestionWindowBytes() { return congestionWindowBytes; }
+    public long getInFlightBytes() { return inFlightBytes; }
+    public long getBandwidthBytesPerSecond() { return bandwidthBytesPerSecond; }
+    public long getAckAggregationBytes() { return ackAggregationBytes; }
+    public double getEcnCeRatio() { return ecnCeRatio; }
+    public String getPathMtuState() { return pathMtuState; }
+    public int getPathMtuProbe() { return pathMtuProbe; }
+    public int getPathMtuMaximum() { return pathMtuMaximum; }
+    public int getFecDataShards() { return fecDataShards; }
+    public int getFecParityShards() { return fecParityShards; }
+    public double getFecRecoveryRatio() { return fecRecoveryRatio; }
 
     private static Path metricsFile() {
         final String value = System.getProperty("raknetify.metricsJsonl", "").trim();
@@ -394,13 +445,21 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
                         "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
                         "\"dscp\":%d,\"small_write_batches\":%d,\"small_write_frames\":%d," +
-                        "\"small_write_delay_ns\":%d,\"pacing_delay_ns\":%d,\"export_dropped\":%d}%n",
+                        "\"small_write_delay_ns\":%d,\"pacing_delay_ns\":%d," +
+                        "\"cc_mode\":\"%s\",\"cwnd_bytes\":%d,\"inflight_bytes\":%d," +
+                        "\"bandwidth_bps\":%d,\"ack_aggregation_bytes\":%d,\"ecn_ce_ratio\":%.6f," +
+                        "\"plpmtud_state\":\"%s\",\"plpmtud_probe\":%d,\"plpmtud_max\":%d," +
+                        "\"fec_data_shards\":%d,\"fec_parity_shards\":%d,\"fec_recovery_ratio\":%.6f," +
+                        "\"export_dropped\":%d}%n",
                 timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
                 adaptivePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
+                congestionMode, congestionWindowBytes, inFlightBytes, bandwidthBytesPerSecond,
+                ackAggregationBytes, ecnCeRatio, pathMtuState, pathMtuProbe, pathMtuMaximum,
+                fecDataShards, fecParityShards, fecRecoveryRatio,
                 METRICS_LINES_DROPPED.get());
         if (!METRICS_LINES.offer(line)) {
             METRICS_LINES_DROPPED.incrementAndGet();

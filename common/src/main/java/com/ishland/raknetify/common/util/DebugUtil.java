@@ -85,6 +85,14 @@ public class DebugUtil {
                         .formatted(logger.getFecRecovered(), logger.getFecParityPackets(), logger.getFecExpired(),
                                 logger.getMtuProbesSent(), logger.getMtuProbesAcknowledged(),
                                 logger.getMtuProbesTimedOut())).append('\n');
+                b.append("Congestion control: %s, cwnd %.1fKiB, in-flight %.1fKiB, bandwidth %.1fKiB/s, ACK aggregation %.1fKiB, ECN-CE %.3f%%"
+                        .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
+                                logger.getInFlightBytes() / 1024.0, logger.getBandwidthBytesPerSecond() / 1024.0,
+                                logger.getAckAggregationBytes() / 1024.0, logger.getEcnCeRatio() * 100.0)).append('\n');
+                b.append("DPLPMTUD: %s, confirmed/probe/max %d/%d/%d; RS shards %d+%d, recovery %.2f%%"
+                        .formatted(logger.getPathMtuState(), logger.getAdaptiveMTU(), logger.getPathMtuProbe(),
+                                logger.getPathMtuMaximum(), logger.getFecDataShards(), logger.getFecParityShards(),
+                                logger.getFecRecoveryRatio() * 100.0)).append('\n');
 
                 if (sync != null && sync.isRemoteSupported()) {
                     b.append("Remote Statistics: ERR: %.4f%%, %d tx, %d rx, Burst: %d"

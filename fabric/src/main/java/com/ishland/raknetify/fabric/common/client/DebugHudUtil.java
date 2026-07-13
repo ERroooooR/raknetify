@@ -88,7 +88,17 @@ public class DebugHudUtil {
                                         .formatted(logger.getAdaptiveLossType(), logger.getAdaptivePacingRate(),
                                                 logger.getAdaptiveDeliveryRate() / 1024.0,
                                                 logger.getAdaptiveLossRatio() * 100.0,
-                                                logger.getFecRecovered()));
+                                                 logger.getFecRecovered()));
+                        consumer.accept(
+                                "[Raknetify] CC: %s, CWND: %.1fKiB, FLIGHT: %.1fKiB, ECN: %.2f%%"
+                                        .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
+                                                logger.getInFlightBytes() / 1024.0, logger.getEcnCeRatio() * 100.0));
+                        consumer.accept(
+                                "[Raknetify] PMTU: %s %d/%d/%d, RS: %d+%d (%.1f%%)"
+                                        .formatted(logger.getPathMtuState(), logger.getAdaptiveMTU(),
+                                                logger.getPathMtuProbe(), logger.getPathMtuMaximum(),
+                                                logger.getFecDataShards(), logger.getFecParityShards(),
+                                                logger.getFecRecoveryRatio() * 100.0));
                         if (serverSync != null && serverSync.isRemoteSupported()) {
                             consumer.accept(
                                     "[Raknetify] S: ERR: %.4f%%, %d tx, %d rx, BST: %d"
