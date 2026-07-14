@@ -52,7 +52,11 @@ public class RakNetConnectionUtil {
     private static final boolean BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED = Boolean.parseBoolean(
             System.getProperty("raknetify.bandwidthOptimizerCompatibility", "true")
     );
+    private static final boolean ZSTD_COMPRESSER_COMPATIBILITY_ENABLED = Boolean.parseBoolean(
+            System.getProperty("raknetify.zstdCompresserCompatibility", "true")
+    );
     private static volatile boolean externalStreamingCompression = false;
+    private static volatile boolean suppressVanillaCompression = false;
 
     public static final int IP_TOS_LOWDELAY = 0b00010000;
     public static final int IP_TOS_THROUGHPUT = 0b00001000;
@@ -127,7 +131,16 @@ public class RakNetConnectionUtil {
      * ordering, but does not negotiate or run Deflate on top of that transport.
      */
     public static void useExternalStreamingCompression(String source) {
+        useExternalStreamingCompression(source, true);
+    }
+
+    public static synchronized void useExternalStreamingCompression(String source, boolean suppressVanillaCompression) {
+        if (externalStreamingCompression) {
+            RakNetConnectionUtil.suppressVanillaCompression |= suppressVanillaCompression;
+            return;
+        }
         externalStreamingCompression = true;
+        RakNetConnectionUtil.suppressVanillaCompression = suppressVanillaCompression;
         System.out.println("Raknetify: Using " + source + " for packet compression; Raknetify streaming compression is disabled");
     }
 
@@ -139,9 +152,24 @@ public class RakNetConnectionUtil {
         return BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED;
     }
 
+    public static boolean isZstdCompresserCompatibilityEnabled() {
+        return ZSTD_COMPRESSER_COMPATIBILITY_ENABLED;
+    }
+
+    public static boolean shouldSuppressVanillaCompression() {
+        return suppressVanillaCompression;
+    }
+
     public static void initializeCompatibility() {
-        if (!externalStreamingCompression && detectBandwidthOptimizer()) {
-            useExternalStreamingCompression("BandwidthOptimizer");
+        if (!externalStreamingCompression && detectZstdCompresserClient()) {
+            // ZSTD_Compresser uses the vanilla SetCompression packet as the signal
+            // that both endpoints should replace their compression handlers. Keep
+            // that packet, while preventing Raknetify from adding Deflate on top.
+            // Probe it before BandwidthOptimizer so this required negotiation also
+            // survives when both compatibility targets are installed.
+            useExternalStreamingCompression("ZSTD_Compresser", false);
+        } else if (!externalStreamingCompression && detectBandwidthOptimizer()) {
+            useExternalStreamingCompression("BandwidthOptimizer", true);
         }
     }
 
@@ -150,11 +178,22 @@ public class RakNetConnectionUtil {
             return false;
         }
 
+        return detectClass("BandwidthOptimizer", "com.PinkCats.bandwidthoptimizer.Bandwidthoptimizer");
+    }
+
+    private static boolean detectZstdCompresserClient() {
+        if (!isZstdCompresserCompatibilityEnabled()) {
+            return false;
+        }
+
+        return detectClass("ZSTD_Compresser", "top.furryaxw.zstd_compresser.Zstd_compresser");
+    }
+
+    private static boolean detectClass(String source, String className) {
         // Do not rely solely on FabricLoader here. When Raknetify is translated by
         // Sinytra Connector, native NeoForge mods are not necessarily visible in
         // FabricLoader's mod list, even though they share the runtime class path.
         final ClassLoader classLoader = RakNetConnectionUtil.class.getClassLoader();
-        final String className = "com.PinkCats.bandwidthoptimizer.Bandwidthoptimizer";
         final String classResource = className.replace('.', '/') + ".class";
         try {
             if (classLoader.getResource(classResource) != null) {
@@ -169,7 +208,7 @@ public class RakNetConnectionUtil {
         } catch (ClassNotFoundException ignored) {
             return false;
         } catch (LinkageError | SecurityException error) {
-            System.err.println("Raknetify: BandwidthOptimizer compatibility probe failed: " + error);
+            System.err.println("Raknetify: " + source + " compatibility probe failed: " + error);
             return false;
         }
     }

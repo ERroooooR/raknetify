@@ -49,7 +49,7 @@ public class MixinServerLoginNetworkHandler {
     private boolean stopCompressionIfStreamingCompressionExists(ClientConnection instance, Packet<?> packet, PacketCallbacks callbacks) {
         if (packet instanceof LoginCompressionS2CPacket) {
             final MultiChannelingStreamingCompression compression = ((IClientConnection) this.connection).getChannel().pipeline().get(MultiChannelingStreamingCompression.class);
-            if (compression != null && (RakNetConnectionUtil.isExternalStreamingCompressionEnabled() || compression.isActive())) {
+            if (compression != null && (RakNetConnectionUtil.shouldSuppressVanillaCompression() || compression.isActive())) {
                 System.out.println("Raknetify: Preventing vanilla compression as transport compression is enabled");
                 return false;
             }

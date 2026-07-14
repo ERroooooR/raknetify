@@ -50,7 +50,7 @@ public class MixinServerLoginNetworkAddon {
     @WrapOperation(method = "sendCompressionPacket()V", at = @At(value = "INVOKE", target = "Lnet/minecraft/server/MinecraftServer;getNetworkCompressionThreshold()I"))
     private int stopCompressionIfStreamingCompressionExists(MinecraftServer server, Operation<Integer> original) {
         final MultiChannelingStreamingCompression compression = ((IClientConnection) this.connection).getChannel().pipeline().get(MultiChannelingStreamingCompression.class);
-        if (compression != null && (RakNetConnectionUtil.isExternalStreamingCompressionEnabled() || compression.isActive())) {
+        if (compression != null && (RakNetConnectionUtil.shouldSuppressVanillaCompression() || compression.isActive())) {
             System.out.println("Raknetify: Preventing vanilla compression as transport compression is enabled");
             return -1;
         }

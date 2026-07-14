@@ -20,6 +20,7 @@
 
 package com.ishland.raknetify.velocity;
 
+import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.SimpleMetricsLogger;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.velocity.connection.RakNetVelocityConnectionUtil;
@@ -46,6 +47,14 @@ public class RaknetifyVelocityLaunchWrapper {
             runnable.run();
             PROXY.getEventManager().register(INSTANCE, ListenerBoundEvent.class, PostOrder.LAST, ignored -> runnable.run());
             return;
+        }
+
+        // Velocity isolates plugin class loaders, so the common class-path probe
+        // cannot see ZSTD_Compresser here. Detect its registered plugin id before
+        // any RakNet channels are initialized instead.
+        if (RakNetConnectionUtil.isZstdCompresserCompatibilityEnabled()
+                && PROXY.getPluginManager().getPlugin("zstd_velocity").isPresent()) {
+            RakNetConnectionUtil.useExternalStreamingCompression("ZSTD_Compresser", false);
         }
 
         SimpleMetricsLogger.initializeMetricsExport();

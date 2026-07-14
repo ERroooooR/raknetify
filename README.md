@@ -85,3 +85,20 @@ runtime class path so it also works when Raknetify is translated for NeoForge by
 This compatibility behavior is enabled by default. It can be disabled for comparison testing with
 `-Draknetify.bandwidthOptimizerCompatibility=false` on both endpoints.
 
+## ZSTD_Compresser compatibility
+
+When the `zstd_compresser` client mod and the `zstd_velocity` Velocity plugin are present,
+Raknetify automatically disables its streaming Deflate layer for RakNet connections. Unlike the
+BandwidthOptimizer integration, Raknetify keeps Velocity's `SetCompression` packet intact because
+ZSTD_Compresser uses it to switch the client and proxy pipelines to Zstd at the same time. This
+prevents compressed bytes from being decoded as a Minecraft packet (for example, `Received unknown
+packet id 764`) while retaining RakNet transport, multi-channel packet priorities, reliability and
+adaptive networking optimizations. If BandwidthOptimizer is installed as well, ZSTD_Compresser's
+required compression negotiation takes precedence and is not suppressed.
+
+Velocity plugin detection uses the registered plugin id so it works across Velocity's isolated
+plugin class loaders. Client detection uses the shared runtime class path and therefore also works
+when Raknetify runs through Sinytra Connector. Compatibility is enabled by default and can be
+disabled for comparison testing with `-Draknetify.zstdCompresserCompatibility=false` on both the
+client and Velocity.
+
