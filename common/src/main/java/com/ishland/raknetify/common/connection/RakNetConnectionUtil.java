@@ -49,6 +49,10 @@ public class RakNetConnectionUtil {
 
     private static final AttributeKey<Boolean> RAKNETIFY_INITIALIZED = AttributeKey.valueOf("raknetify:initialized");
     private static final AttributeKey<Boolean> RAKNETIFY_PARENT_INITIALIZED = AttributeKey.valueOf("raknetify:parent-initialized");
+    private static final boolean BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED = Boolean.parseBoolean(
+            System.getProperty("raknetify.bandwidthOptimizerCompatibility", "true")
+    );
+    private static volatile boolean externalStreamingCompression = false;
 
     public static final int IP_TOS_LOWDELAY = 0b00010000;
     public static final int IP_TOS_THROUGHPUT = 0b00001000;
@@ -78,6 +82,7 @@ public class RakNetConnectionUtil {
 
     public static void initChannel(Channel channel) {
         if (channel.config() instanceof RakNet.Config config) {
+            initializeCompatibility();
             config.setMaxQueuedBytes(Constants.MAX_QUEUED_SIZE);
             config.setMaxPendingFrameSets(Constants.MAX_PENDING_FRAME_SETS);
             config.setRetryDelayNanos(TimeUnit.NANOSECONDS.convert(DEFAULT_RETRY_DELAY_MILLIS, TimeUnit.MILLISECONDS));
@@ -106,9 +111,66 @@ public class RakNetConnectionUtil {
 //            channel.pipeline().addLast("raknetify-flush-enforcer", new FlushEnforcer());
 //            channel.pipeline().addLast("raknetify-flush-consolidation", new FlushConsolidationHandler(Integer.MAX_VALUE, true));
             channel.pipeline().addLast("raknetify-no-flush", new NoFlush());
-            channel.pipeline().addLast(MultiChannelingStreamingCompression.NAME, new MultiChannelingStreamingCompression(Constants.RAKNET_GAME_PACKET_ID, Constants.RAKNET_STREAMING_COMPRESSION_PACKET_ID));
+            channel.pipeline().addLast(MultiChannelingStreamingCompression.NAME, new MultiChannelingStreamingCompression(
+                    Constants.RAKNET_GAME_PACKET_ID,
+                    Constants.RAKNET_STREAMING_COMPRESSION_PACKET_ID,
+                    !externalStreamingCompression
+            ));
 //            channel.pipeline().addLast(MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             channel.pipeline().addLast("raknetify-frame-data-blocker", new FrameDataBlocker());
+        }
+    }
+
+    /**
+     * Selects an encoded-packet transport compressor supplied by another mod.
+     * Raknetify keeps its compression handler in the pipeline for stable handler
+     * ordering, but does not negotiate or run Deflate on top of that transport.
+     */
+    public static void useExternalStreamingCompression(String source) {
+        externalStreamingCompression = true;
+        System.out.println("Raknetify: Using " + source + " for packet compression; Raknetify streaming compression is disabled");
+    }
+
+    public static boolean isExternalStreamingCompressionEnabled() {
+        return externalStreamingCompression;
+    }
+
+    public static boolean isBandwidthOptimizerCompatibilityEnabled() {
+        return BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED;
+    }
+
+    public static void initializeCompatibility() {
+        if (!externalStreamingCompression && detectBandwidthOptimizer()) {
+            useExternalStreamingCompression("BandwidthOptimizer");
+        }
+    }
+
+    private static boolean detectBandwidthOptimizer() {
+        if (!isBandwidthOptimizerCompatibilityEnabled()) {
+            return false;
+        }
+
+        // Do not rely solely on FabricLoader here. When Raknetify is translated by
+        // Sinytra Connector, native NeoForge mods are not necessarily visible in
+        // FabricLoader's mod list, even though they share the runtime class path.
+        final ClassLoader classLoader = RakNetConnectionUtil.class.getClassLoader();
+        final String className = "com.PinkCats.bandwidthoptimizer.Bandwidthoptimizer";
+        final String classResource = className.replace('.', '/') + ".class";
+        try {
+            if (classLoader.getResource(classResource) != null) {
+                return true;
+            }
+            Class.forName(
+                    className,
+                    false,
+                    classLoader
+            );
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        } catch (LinkageError | SecurityException error) {
+            System.err.println("Raknetify: BandwidthOptimizer compatibility probe failed: " + error);
+            return false;
         }
     }
 

@@ -70,3 +70,17 @@ the recorder without affecting traffic. Records enter a bounded non-blocking que
 writer flushes them off the Netty event loop. `export_dropped` reports queue saturation, so slow
 storage is visible without stalling players.
 
+## BandwidthOptimizer compatibility
+
+When the mod `bandwidthoptimizer` is present, Raknetify automatically leaves encoded-packet
+compression to BandwidthOptimizer. RakNet multi-channel transport remains enabled, while
+Raknetify's streaming Deflate and vanilla Minecraft compression are disabled for RakNet
+connections to avoid compressing BandwidthOptimizer's Zstd output a second time. TCP connections
+are unaffected. BandwidthOptimizer's delayed packet batching is also disabled only on RakNet
+connections: a delayed mixed-packet carrier no longer hides the original packet classes that
+Raknetify needs to preserve per-packet channel priority. Detection is performed from the shared
+runtime class path so it also works when Raknetify is translated for NeoForge by Sinytra Connector.
+
+This compatibility behavior is enabled by default. It can be disabled for comparison testing with
+`-Draknetify.bandwidthOptimizerCompatibility=false` on both endpoints.
+

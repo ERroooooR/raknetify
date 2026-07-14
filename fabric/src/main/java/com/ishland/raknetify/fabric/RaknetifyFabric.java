@@ -26,6 +26,7 @@ package com.ishland.raknetify.fabric;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.SimpleMetricsLogger;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.fabric.common.client.DebugHudUtil1_21_9;
@@ -98,6 +99,7 @@ public class RaknetifyFabric implements ModInitializer, PreLaunchEntrypoint {
 
     @Override
     public void onInitialize() {
+        RakNetConnectionUtil.initializeCompatibility();
         SimpleMetricsLogger.initializeMetricsExport();
         MultiVersionUtil.init();
 
