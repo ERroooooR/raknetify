@@ -50,6 +50,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     private volatile long packetsIn = 0L;
     private volatile long framesIn = 0L;
+    private volatile long reliableFrameDuplicates = 0L;
     private volatile long framesError = 0L;
     private volatile long bytesIn = 0L;
     private volatile long packetsOut = 0L;
@@ -143,6 +144,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     @Override
     public void framesIn(int delta) {
         framesIn += delta;
+    }
+
+    @Override
+    public void reliableFrameDuplicate(int delta) {
+        reliableFrameDuplicates += delta;
     }
 
     @Override
@@ -449,6 +455,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public String getPathMtuState() { return pathMtuState; }
     public int getPathMtuProbe() { return pathMtuProbe; }
     public int getPathMtuMaximum() { return pathMtuMaximum; }
+    public long getReliableFrameDuplicates() { return reliableFrameDuplicates; }
     public int getFecDataShards() { return fecDataShards; }
     public int getFecParityShards() { return fecParityShards; }
     public double getFecRecoveryRatio() { return fecRecoveryRatio; }
@@ -469,6 +476,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         final String line = String.format(Locale.ROOT,
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
+                        "\"reliable_frame_duplicates\":%d," +
                         "\"pacing_pps\":%.3f,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
@@ -482,6 +490,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"export_dropped\":%d}%n",
                 timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
+                reliableFrameDuplicates,
                 adaptivePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,

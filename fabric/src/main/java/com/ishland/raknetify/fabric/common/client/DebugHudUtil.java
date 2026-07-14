@@ -77,10 +77,11 @@ public class DebugHudUtil {
                                         ));
 
                         consumer.accept(
-                                "[Raknetify] C: ERR: %.4f%%, %d tx, %d rx, BST: %d"
+                                "[Raknetify] C: ERR: %.4f%%, %d tx, %d rx, DUP: %d, BST: %d"
                                         .formatted(
                                                 logger.getMeasureErrorRate() * 100.0,
                                                 logger.getMeasureTX(), logger.getMeasureRX(),
+                                                logger.getReliableFrameDuplicates(),
                                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                                         ));
                         consumer.accept(
