@@ -51,6 +51,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long packetsIn = 0L;
     private volatile long framesIn = 0L;
     private volatile long reliableFrameDuplicates = 0L;
+    private volatile long nacksDeferred = 0L;
+    private volatile long reorderedPackets = 0L;
+    private volatile long nackRetransmitBytes = 0L;
+    private volatile long timeoutRetransmitBytes = 0L;
     private volatile long framesError = 0L;
     private volatile long bytesIn = 0L;
     private volatile long packetsOut = 0L;
@@ -154,6 +158,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public void reliableFrameDuplicate(int delta) {
         reliableFrameDuplicates += delta;
     }
+
+    @Override
+    public void nackDeferred(int delta) { nacksDeferred += delta; }
+
+    @Override
+    public void reorderedPacket(int delta) { reorderedPackets += delta; }
+
+    @Override
+    public void nackRetransmit(int bytes) { nackRetransmitBytes += bytes; }
+
+    @Override
+    public void timeoutRetransmit(int bytes) { timeoutRetransmitBytes += bytes; }
 
     @Override
     public void frameError(int delta) {
@@ -473,6 +489,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public int getPathMtuProbe() { return pathMtuProbe; }
     public int getPathMtuMaximum() { return pathMtuMaximum; }
     public long getReliableFrameDuplicates() { return reliableFrameDuplicates; }
+    public long getNacksDeferred() { return nacksDeferred; }
+    public long getReorderedPackets() { return reorderedPackets; }
+    public long getNackRetransmitBytes() { return nackRetransmitBytes; }
+    public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
     public int getFecDataShards() { return fecDataShards; }
     public int getFecParityShards() { return fecParityShards; }
     public double getFecRecoveryRatio() { return fecRecoveryRatio; }
@@ -500,7 +520,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         return String.format(Locale.ROOT,
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
-                        "\"reliable_frame_duplicates\":%d," +
+                        "\"reliable_frame_duplicates\":%d,\"nack_deferred\":%d," +
+                        "\"reordered_packets\":%d,\"nack_retransmit_bytes\":%d," +
+                        "\"timeout_retransmit_bytes\":%d," +
                         "\"pacing_pps\":%.3f,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
@@ -513,17 +535,23 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"pacing_capped\":%s,\"bandwidth_probe_suppressed\":%s," +
                         "\"plpmtud_state\":\"%s\",\"plpmtud_probe\":%d,\"plpmtud_max\":%d," +
                         "\"fec_data_shards\":%d,\"fec_parity_shards\":%d,\"fec_recovery_ratio\":%.6f," +
+                        "\"remote_supported\":%s,\"remote_queued_bytes\":%d,\"remote_burst\":%d," +
+                        "\"remote_error_rate\":%.6f,\"remote_tx_pps\":%d,\"remote_rx_pps\":%d," +
                         "\"remote_adaptive_supported\":%s,\"remote_rtt_ns\":%d,\"remote_rtt_stddev_ns\":%d," +
                         "\"remote_pacing_pps\":%.3f,\"remote_delivery_bps\":%d,\"remote_loss_ratio\":%.6f," +
                         "\"remote_loss_type\":\"%s\",\"remote_cc_mode\":\"%s\"," +
                         "\"remote_cwnd_bytes\":%d,\"remote_inflight_bytes\":%d,\"remote_bandwidth_bps\":%d," +
-                        "\"remote_reliable_frame_duplicates\":%d,\"remote_congestion_reason\":\"%s\"," +
+                        "\"remote_reliable_frame_duplicates\":%d,\"remote_recovery_supported\":%s," +
+                        "\"remote_nack_deferred\":%d,\"remote_reordered_packets\":%d," +
+                        "\"remote_nack_retransmit_bytes\":%d,\"remote_timeout_retransmit_bytes\":%d," +
+                        "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
                         "\"export_dropped\":%d}%n",
                 timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
-                reliableFrameDuplicates,
+                reliableFrameDuplicates, nacksDeferred, reorderedPackets, nackRetransmitBytes,
+                timeoutRetransmitBytes,
                 adaptivePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
@@ -533,9 +561,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 pacingCapped, bandwidthProbeSuppressed,
                 pathMtuState, pathMtuProbe, pathMtuMaximum,
                 fecDataShards, fecParityShards, fecRecoveryRatio,
+                isRemoteSupported(), remoteQueuedBytes(), remoteBurst(), remoteErrorRate(), remoteTX(), remoteRX(),
                 isRemoteAdaptiveSupported(), remoteRttNanos(), remoteRttStdDevNanos(),
                 remotePacingRate(), remoteDeliveryRate(), remoteLossRatio(), remoteLossType(), remoteCongestionMode(),
                 remoteCongestionWindow(), remoteInFlight(), remoteBandwidth(), remoteReliableFrameDuplicates(),
+                isRemoteRecoverySupported(), remoteNacksDeferred(), remoteReorderedPackets(),
+                remoteNackRetransmitBytes(), remoteTimeoutRetransmitBytes(),
                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
@@ -544,6 +575,20 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         return metricsSynchronizationHandler != null
                 && metricsSynchronizationHandler.isRemoteAdaptiveSupported();
     }
+
+    private boolean isRemoteSupported() {
+        return metricsSynchronizationHandler != null && metricsSynchronizationHandler.isRemoteSupported();
+    }
+
+    private boolean isRemoteRecoverySupported() {
+        return metricsSynchronizationHandler != null && metricsSynchronizationHandler.isRemoteRecoverySupported();
+    }
+
+    private int remoteQueuedBytes() { return isRemoteSupported() ? metricsSynchronizationHandler.getQueuedBytes() : 0; }
+    private int remoteBurst() { return isRemoteSupported() ? metricsSynchronizationHandler.getBurst() : 0; }
+    private double remoteErrorRate() { return isRemoteSupported() ? metricsSynchronizationHandler.getErrorRate() : 0D; }
+    private int remoteTX() { return isRemoteSupported() ? metricsSynchronizationHandler.getTX() : 0; }
+    private int remoteRX() { return isRemoteSupported() ? metricsSynchronizationHandler.getRX() : 0; }
 
     private long remoteRttNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttNanos() : 0L; }
     private long remoteRttStdDevNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttStdDevNanos() : 0L; }
@@ -556,6 +601,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private long remoteInFlight() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getInFlight() : 0L; }
     private long remoteBandwidth() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getBandwidth() : 0L; }
     private long remoteReliableFrameDuplicates() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getReliableFrameDuplicates() : 0L; }
+    private long remoteNacksDeferred() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getNacksDeferred() : 0L; }
+    private long remoteReorderedPackets() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getReorderedPackets() : 0L; }
+    private long remoteNackRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getNackRetransmitBytes() : 0L; }
+    private long remoteTimeoutRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getTimeoutRetransmitBytes() : 0L; }
     private String remoteCongestionReason() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionReason() : "UNAVAILABLE"; }
     private double remoteRttInflation() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttInflation() : 1D; }
     private boolean remotePacingCapped() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isPacingCapped(); }

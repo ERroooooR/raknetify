@@ -49,7 +49,8 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     // RTT, pacing, loss classification, congestion state and diagnostics.
 
     private static final byte VERSION = 0x00;
-    private static final int EXTENDED_SIZE = 84;
+    private static final int ADAPTIVE_EXTENDED_SIZE = 84;
+    private static final int RECOVERY_EXTENDED_SIZE = 32;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -69,7 +70,8 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         if (this.ctx.channel().config() instanceof RakNet.Config config && config.getMetrics() instanceof SimpleMetricsLogger logger){
             ByteBuf buffer = null;
            try {
-               buffer = this.ctx.alloc().buffer(1 + 8 + 4 + 4 + 8 + 4 + 4 + EXTENDED_SIZE);
+               buffer = this.ctx.alloc().buffer(1 + 8 + 4 + 4 + 8 + 4 + 4
+                       + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -103,6 +105,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private double rttInflation = 1D;
     private boolean pacingCapped;
     private boolean bandwidthProbeSuppressed;
+    private boolean isRemoteRecoverySupported;
+    private long nacksDeferred;
+    private long reorderedPackets;
+    private long nackRetransmitBytes;
+    private long timeoutRetransmitBytes;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -160,6 +167,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public double getRttInflation() { return rttInflation; }
     public boolean isPacingCapped() { return pacingCapped; }
     public boolean isBandwidthProbeSuppressed() { return bandwidthProbeSuppressed; }
+    public boolean isRemoteRecoverySupported() { return isRemoteRecoverySupported; }
+    public long getNacksDeferred() { return nacksDeferred; }
+    public long getReorderedPackets() { return reorderedPackets; }
+    public long getNackRetransmitBytes() { return nackRetransmitBytes; }
+    public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -185,6 +197,10 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         int flags = logger.isPacingCapped() ? 1 : 0;
         if (logger.isBandwidthProbeSuppressed()) flags |= 2;
         buffer.writeByte(flags);
+        buffer.writeLong(logger.getNacksDeferred());
+        buffer.writeLong(logger.getReorderedPackets());
+        buffer.writeLong(logger.getNackRetransmitBytes());
+        buffer.writeLong(logger.getTimeoutRetransmitBytes());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -201,7 +217,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         this.errorRate = byteBuf.readDouble();
         this.tx = byteBuf.readInt();
         this.rx = byteBuf.readInt();
-        if (byteBuf.readableBytes() >= EXTENDED_SIZE) {
+        if (byteBuf.readableBytes() >= ADAPTIVE_EXTENDED_SIZE) {
             this.rttNanos = byteBuf.readLong();
             this.rttStdDevNanos = byteBuf.readLong();
             this.pacingRate = byteBuf.readDouble();
@@ -219,6 +235,13 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             this.pacingCapped = (flags & 1) != 0;
             this.bandwidthProbeSuppressed = (flags & 2) != 0;
             this.isRemoteAdaptiveSupported = true;
+            if (byteBuf.readableBytes() >= RECOVERY_EXTENDED_SIZE) {
+                this.nacksDeferred = byteBuf.readLong();
+                this.reorderedPackets = byteBuf.readLong();
+                this.nackRetransmitBytes = byteBuf.readLong();
+                this.timeoutRetransmitBytes = byteBuf.readLong();
+                this.isRemoteRecoverySupported = true;
+            }
         }
         return true;
     }

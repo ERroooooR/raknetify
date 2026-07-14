@@ -86,6 +86,10 @@ public class DebugUtil {
                         .formatted(logger.getFecRecovered(), logger.getFecParityPackets(), logger.getFecExpired(),
                                 logger.getMtuProbesSent(), logger.getMtuProbesAcknowledged(),
                                 logger.getMtuProbesTimedOut())).append('\n');
+                b.append("Retransmission recovery: deferred NACK %d, reordered %d, NACK %.1fKiB, timeout %.1fKiB"
+                        .formatted(logger.getNacksDeferred(), logger.getReorderedPackets(),
+                                logger.getNackRetransmitBytes() / 1024.0,
+                                logger.getTimeoutRetransmitBytes() / 1024.0)).append('\n');
                 b.append("Congestion control: %s, cwnd %.1fKiB, in-flight %.1fKiB, bandwidth %.1fKiB/s, ACK aggregation %.1fKiB, ECN-CE %.3f%%"
                         .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
                                 logger.getInFlightBytes() / 1024.0, logger.getBandwidthBytesPerSecond() / 1024.0,
@@ -108,6 +112,12 @@ public class DebugUtil {
                                         sync.getPacingRate(), sync.getDeliveryRate() / 1024.0,
                                         sync.getLossRatio() * 100.0, sync.getRttInflation(), sync.isPacingCapped()))
                                 .append('\n');
+                    }
+                    if (sync.isRemoteRecoverySupported()) {
+                        b.append("Remote retransmission recovery: deferred NACK %d, reordered %d, NACK %.1fKiB, timeout %.1fKiB"
+                                .formatted(sync.getNacksDeferred(), sync.getReorderedPackets(),
+                                        sync.getNackRetransmitBytes() / 1024.0,
+                                        sync.getTimeoutRetransmitBytes() / 1024.0)).append('\n');
                     }
                 }
 

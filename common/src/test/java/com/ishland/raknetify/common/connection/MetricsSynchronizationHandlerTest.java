@@ -29,6 +29,7 @@ import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MetricsSynchronizationHandlerTest {
@@ -43,12 +44,16 @@ class MetricsSynchronizationHandlerTest {
         sender.adaptiveLossType("RATE_LIMIT");
         sender.congestionControl("DRAIN", 8192L, 2048L, 65536L, 0L, 0D);
         sender.reliableFrameDuplicate(7);
+        sender.nackDeferred(11);
+        sender.reorderedPacket(5);
+        sender.nackRetransmit(4096);
+        sender.timeoutRetransmit(1024);
         sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(117, payload.readableBytes());
+            assertEquals(149, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -60,8 +65,32 @@ class MetricsSynchronizationHandlerTest {
             assertEquals("NON_CONGESTIVE_HIGH_LOSS", receiver.getCongestionReason());
             assertEquals(37.5D, receiver.getPacingRate());
             assertEquals(7L, receiver.getReliableFrameDuplicates());
+            assertTrue(receiver.isRemoteRecoverySupported());
+            assertEquals(11L, receiver.getNacksDeferred());
+            assertEquals(5L, receiver.getReorderedPackets());
+            assertEquals(4096L, receiver.getNackRetransmitBytes());
+            assertEquals(1024L, receiver.getTimeoutRetransmitBytes());
             assertTrue(receiver.isPacingCapped());
             assertTrue(receiver.isBandwidthProbeSuppressed());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousAdaptiveExtensionRemainsReadableWithoutRecoveryTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.adaptivePacingRate(123D);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(117); // base 33 bytes + the previous 84-byte adaptive extension
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteAdaptiveSupported());
+            assertEquals(123D, receiver.getPacingRate());
+            assertFalse(receiver.isRemoteRecoverySupported());
         } finally {
             payload.release();
         }

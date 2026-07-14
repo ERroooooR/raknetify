@@ -97,6 +97,11 @@ public class DebugHudUtil {
                                         .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
                                                 logger.getInFlightBytes() / 1024.0, logger.getEcnCeRatio() * 100.0));
                         consumer.accept(
+                                "[Raknetify] RETX: NACK %.1fKiB, TO %.1fKiB, REORDER: %d/%d"
+                                        .formatted(logger.getNackRetransmitBytes() / 1024.0,
+                                                logger.getTimeoutRetransmitBytes() / 1024.0,
+                                                logger.getReorderedPackets(), logger.getNacksDeferred()));
+                        consumer.accept(
                                 "[Raknetify] PMTU: %s %d/%d/%d, RS: %d+%d (%.1f%%)"
                                         .formatted(logger.getPathMtuState(), logger.getAdaptiveMTU(),
                                                 logger.getPathMtuProbe(), logger.getPathMtuMaximum(),
@@ -116,6 +121,13 @@ public class DebugHudUtil {
                                                 .formatted(serverSync.getLossType(), serverSync.getCongestionReason(),
                                                         serverSync.getPacingRate(), serverSync.getLossRatio() * 100.0,
                                                         serverSync.getRttInflation(), serverSync.isPacingCapped() ? "Y" : "N"));
+                            }
+                            if (serverSync.isRemoteRecoverySupported()) {
+                                consumer.accept(
+                                        "[Raknetify] S RETX: NACK %.1fKiB, TO %.1fKiB, REORDER: %d/%d"
+                                                .formatted(serverSync.getNackRetransmitBytes() / 1024.0,
+                                                        serverSync.getTimeoutRetransmitBytes() / 1024.0,
+                                                        serverSync.getReorderedPackets(), serverSync.getNacksDeferred()));
                             }
                         }
                     } else {

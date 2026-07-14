@@ -70,7 +70,7 @@ public class RakNetConnectionUtil {
     public static final boolean DEFAULT_ADAPTIVE_DSCP = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveDscp", "false"));
     public static final int DEFAULT_PROTOCOL_VERSION = configuredInt("raknetify.protocolVersion", 12, 9, 12);
     public static final int DEFAULT_ADAPTIVE_MIN_PPS = configuredInt("raknetify.adaptiveMinPps", 30, 1, 100_000);
-    public static final int DEFAULT_ADAPTIVE_MAX_PPS = configuredInt("raknetify.adaptiveMaxPps", 2000, 1, 100_000);
+    public static final int DEFAULT_ADAPTIVE_MAX_PPS = configuredInt("raknetify.adaptiveMaxPps", 600, 1, 100_000);
     public static final int DEFAULT_SMALL_WRITE_COALESCE_MICROS = configuredInt("raknetify.smallWriteCoalesceMicros", 500, 0, 100_000);
     public static final int DEFAULT_PLPMTUD_MAX_MTU = configuredInt("raknetify.plpmtudMaxMtu", 1452, 576, 65_507);
 

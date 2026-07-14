@@ -35,12 +35,22 @@ class SimpleMetricsLoggerTest {
     void extendedMetricsJsonlFormatsWithoutMissingArguments() {
         final SimpleMetricsLogger logger = new SimpleMetricsLogger();
         logger.congestionDiagnostics("RTT_INFLATION_LOSS", 4.5D, true, true);
+        logger.nackDeferred(3);
+        logger.reorderedPacket(2);
+        logger.nackRetransmit(1400);
+        logger.timeoutRetransmit(700);
 
         final String line = assertDoesNotThrow(() -> logger.formatMetricsJsonl(123L));
 
         assertTrue(line.contains("\"congestion_reason\":\"RTT_INFLATION_LOSS\""));
         assertTrue(line.contains("\"rtt_inflation\":4.500000"));
         assertTrue(line.contains("\"remote_adaptive_supported\":false"));
+        assertTrue(line.contains("\"nack_deferred\":3"));
+        assertTrue(line.contains("\"reordered_packets\":2"));
+        assertTrue(line.contains("\"nack_retransmit_bytes\":1400"));
+        assertTrue(line.contains("\"timeout_retransmit_bytes\":700"));
+        assertTrue(line.contains("\"remote_supported\":false"));
+        assertTrue(line.contains("\"remote_recovery_supported\":false"));
         assertTrue(line.contains("\"remote_loss_type\":\"UNAVAILABLE\""));
     }
 }
