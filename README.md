@@ -40,7 +40,7 @@ JVM properties are available on both client and server:
 -Draknetify.protocolVersion=12
 -Draknetify.adaptiveMinPps=50
 -Draknetify.adaptiveMaxPps=600
--Draknetify.smallWriteCoalesceMicros=250
+-Draknetify.smallWriteCoalesceMicros=500
 -Draknetify.plpmtudMaxMtu=1452
 -Draknetify.metricsJsonl=true
 ```
@@ -67,6 +67,9 @@ active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and
 It also records the byte-pacing ceiling, fragment-reassembly and ordered-queue head-of-line delay,
 plus actual external-compressor batch sizes. These fields distinguish a harmless per-tick display
 peak from transport queueing or a large compressed batch waiting for all RakNet fragments.
+During sustained `RATE_LIMIT` loss, ACKs are automatically aggregated for 8-25 ms and at most one
+ACK is repeated per 100 ms. The `ack_*` and `remote_ack_*` fields show whether this bounded ACK
+protection is active and how many packets it added; no extra JVM property is required.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable

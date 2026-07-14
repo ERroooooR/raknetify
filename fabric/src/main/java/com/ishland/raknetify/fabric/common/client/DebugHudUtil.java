@@ -103,6 +103,12 @@ public class DebugHudUtil {
                                                 logger.getTimeoutRetransmitBytes() / 1024.0,
                                                 logger.getReorderedPackets(), logger.getNacksDeferred()));
                         consumer.accept(
+                                "[Raknetify] ACK: PROTECT %s, FLUSH/REPEAT %.1f/%.1fms, R: %d/%d"
+                                        .formatted(logger.isAdaptiveAckProtection() ? "Y" : "N",
+                                                logger.getAdaptiveAckFlushDelayNanos() / 1_000_000.0,
+                                                logger.getAdaptiveAckRepeatDelayNanos() / 1_000_000.0,
+                                                logger.getAckRepeatedPackets(), logger.getAckRepeatedFrameSets()));
+                        consumer.accept(
                                 "[Raknetify] HOL: FRAG %d/%.1fKiB/%.1fms, ORDER %d/%.1fms, MAX %.1f/%.1fms"
                                         .formatted(logger.getFragmentPendingBuilders(),
                                                 logger.getFragmentPendingBytes() / 1024.0,
@@ -165,6 +171,15 @@ public class DebugHudUtil {
                                                 .formatted(serverSync.getNackRetransmitBytes() / 1024.0,
                                                         serverSync.getTimeoutRetransmitBytes() / 1024.0,
                                                         serverSync.getReorderedPackets(), serverSync.getNacksDeferred()));
+                            }
+                            if (serverSync.isRemoteAckPolicySupported()) {
+                                consumer.accept(
+                                        "[Raknetify] S ACK: PROTECT %s, FLUSH/REPEAT %.1f/%.1fms, R: %d/%d"
+                                                .formatted(serverSync.isAckProtection() ? "Y" : "N",
+                                                        serverSync.getAckFlushDelayNanos() / 1_000_000.0,
+                                                        serverSync.getAckRepeatDelayNanos() / 1_000_000.0,
+                                                        serverSync.getAckRepeatedPackets(),
+                                                        serverSync.getAckRepeatedFrameSets()));
                             }
                         }
                     } else {

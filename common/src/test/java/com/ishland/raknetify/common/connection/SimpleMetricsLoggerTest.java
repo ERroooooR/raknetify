@@ -45,6 +45,8 @@ class SimpleMetricsLoggerTest {
         logger.orderedQueuePending(3, 6_000_000L);
         logger.orderedQueueRelease(4, 9_000_000L);
         logger.applicationBatch(32768);
+        logger.ackRepeated(3);
+        logger.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
 
         final String line = assertDoesNotThrow(() -> logger.formatMetricsJsonl(123L));
 
@@ -60,6 +62,12 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ordered_pending_frames\":3"));
         assertTrue(line.contains("\"application_batches\":1"));
         assertTrue(line.contains("\"application_batch_max_bytes\":32768"));
+        assertTrue(line.contains("\"ack_repeated_packets\":1"));
+        assertTrue(line.contains("\"ack_repeated_framesets\":3"));
+        assertTrue(line.contains("\"ack_protection\":true"));
+        assertTrue(line.contains("\"ack_flush_delay_ns\":8000000"));
+        assertTrue(line.contains("\"ack_repeat_delay_ns\":10000000"));
+        assertTrue(line.contains("\"remote_ack_policy_supported\":false"));
         assertTrue(line.contains("\"remote_supported\":false"));
         assertTrue(line.contains("\"remote_recovery_supported\":false"));
         assertTrue(line.contains("\"remote_loss_type\":\"UNAVAILABLE\""));

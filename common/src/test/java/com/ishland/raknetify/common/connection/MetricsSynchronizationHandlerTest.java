@@ -55,12 +55,14 @@ class MetricsSynchronizationHandlerTest {
         sender.orderedQueueRelease(4, 50_000_000L);
         sender.applicationBatch(16384);
         sender.applicationBatch(32768);
+        sender.ackRepeated(3);
+        sender.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
         sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(245, payload.readableBytes());
+            assertEquals(278, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -93,6 +95,12 @@ class MetricsSynchronizationHandlerTest {
             assertEquals(2L, receiver.getApplicationBatches());
             assertEquals(49152L, receiver.getApplicationBatchBytes());
             assertEquals(32768L, receiver.getApplicationBatchMaxBytes());
+            assertTrue(receiver.isRemoteAckPolicySupported());
+            assertEquals(1L, receiver.getAckRepeatedPackets());
+            assertEquals(3L, receiver.getAckRepeatedFrameSets());
+            assertTrue(receiver.isAckProtection());
+            assertEquals(8_000_000L, receiver.getAckFlushDelayNanos());
+            assertEquals(10_000_000L, receiver.getAckRepeatDelayNanos());
             assertTrue(receiver.isPacingCapped());
             assertTrue(receiver.isBandwidthProbeSuppressed());
         } finally {
@@ -116,6 +124,26 @@ class MetricsSynchronizationHandlerTest {
             assertFalse(receiver.isRemoteBytePacingSupported());
             assertFalse(receiver.isRemoteHolSupported());
             assertFalse(receiver.isRemoteApplicationBatchSupported());
+            assertFalse(receiver.isRemoteAckPolicySupported());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousApplicationBatchExtensionRemainsReadableWithoutAckPolicyTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.applicationBatch(4096);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(245);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteApplicationBatchSupported());
+            assertEquals(1L, receiver.getApplicationBatches());
+            assertFalse(receiver.isRemoteAckPolicySupported());
         } finally {
             payload.release();
         }

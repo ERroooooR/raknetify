@@ -54,6 +54,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final int BYTE_PACING_EXTENDED_SIZE = 8;
     private static final int HOL_EXTENDED_SIZE = 64;
     private static final int APPLICATION_BATCH_EXTENDED_SIZE = 24;
+    private static final int ACK_POLICY_EXTENDED_SIZE = 33;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -76,7 +77,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                buffer = this.ctx.alloc().buffer(1 + 8 + 4 + 4 + 8 + 4 + 4
                        + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE
                        + BYTE_PACING_EXTENDED_SIZE + HOL_EXTENDED_SIZE
-                       + APPLICATION_BATCH_EXTENDED_SIZE);
+                       + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -131,6 +132,12 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private long applicationBatches;
     private long applicationBatchBytes;
     private long applicationBatchMaxBytes;
+    private boolean isRemoteAckPolicySupported;
+    private long ackRepeatedPackets;
+    private long ackRepeatedFrameSets;
+    private boolean ackProtection;
+    private long ackFlushDelayNanos;
+    private long ackRepeatDelayNanos;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -209,6 +216,12 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public long getApplicationBatches() { return applicationBatches; }
     public long getApplicationBatchBytes() { return applicationBatchBytes; }
     public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
+    public boolean isRemoteAckPolicySupported() { return isRemoteAckPolicySupported; }
+    public long getAckRepeatedPackets() { return ackRepeatedPackets; }
+    public long getAckRepeatedFrameSets() { return ackRepeatedFrameSets; }
+    public boolean isAckProtection() { return ackProtection; }
+    public long getAckFlushDelayNanos() { return ackFlushDelayNanos; }
+    public long getAckRepeatDelayNanos() { return ackRepeatDelayNanos; }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -251,6 +264,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         buffer.writeLong(logger.getApplicationBatches());
         buffer.writeLong(logger.getApplicationBatchBytes());
         buffer.writeLong(logger.getApplicationBatchMaxBytes());
+        buffer.writeLong(logger.getAckRepeatedPackets());
+        buffer.writeLong(logger.getAckRepeatedFrameSets());
+        buffer.writeByte(logger.isAdaptiveAckProtection() ? 1 : 0);
+        buffer.writeLong(logger.getAdaptiveAckFlushDelayNanos());
+        buffer.writeLong(logger.getAdaptiveAckRepeatDelayNanos());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -310,6 +328,14 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                             this.applicationBatchBytes = byteBuf.readLong();
                             this.applicationBatchMaxBytes = byteBuf.readLong();
                             this.isRemoteApplicationBatchSupported = true;
+                            if (byteBuf.readableBytes() >= ACK_POLICY_EXTENDED_SIZE) {
+                                this.ackRepeatedPackets = byteBuf.readLong();
+                                this.ackRepeatedFrameSets = byteBuf.readLong();
+                                this.ackProtection = byteBuf.readUnsignedByte() != 0;
+                                this.ackFlushDelayNanos = byteBuf.readLong();
+                                this.ackRepeatDelayNanos = byteBuf.readLong();
+                                this.isRemoteAckPolicySupported = true;
+                            }
                         }
                     }
                 }
