@@ -90,6 +90,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile boolean adaptiveAckProtection;
     private volatile long adaptiveAckFlushDelayNanos;
     private volatile long adaptiveAckRepeatDelayNanos;
+    private volatile boolean applicationLimited = true;
+    private volatile String backlogState = "IDLE";
+    private volatile long backlogAgeNanos;
+    private volatile long backlogProbes;
     private volatile long adaptiveDeliveryRate;
     private volatile double adaptiveLossRatio;
     private volatile long adaptiveAcknowledged;
@@ -312,6 +316,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         adaptiveAckProtection = protectedMode;
         adaptiveAckFlushDelayNanos = flushDelayNanos;
         adaptiveAckRepeatDelayNanos = repeatDelayNanos;
+    }
+
+    @Override
+    public void adaptiveDemand(boolean applicationLimited, String backlogState,
+                               long backlogAgeNanos, long backlogProbes) {
+        this.applicationLimited = applicationLimited;
+        this.backlogState = backlogState;
+        this.backlogAgeNanos = backlogAgeNanos;
+        this.backlogProbes = backlogProbes;
     }
 
     @Override
@@ -580,6 +593,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public boolean isAdaptiveAckProtection() { return adaptiveAckProtection; }
     public long getAdaptiveAckFlushDelayNanos() { return adaptiveAckFlushDelayNanos; }
     public long getAdaptiveAckRepeatDelayNanos() { return adaptiveAckRepeatDelayNanos; }
+    public boolean isApplicationLimited() { return applicationLimited; }
+    public String getBacklogState() { return backlogState; }
+    public long getBacklogAgeNanos() { return backlogAgeNanos; }
+    public long getBacklogProbes() { return backlogProbes; }
     public int getFecDataShards() { return fecDataShards; }
     public int getFecParityShards() { return fecParityShards; }
     public double getFecRecoveryRatio() { return fecRecoveryRatio; }
@@ -619,6 +636,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"application_batch_max_bytes\":%d," +
                         "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
                         "\"ack_protection\":%s,\"ack_flush_delay_ns\":%d,\"ack_repeat_delay_ns\":%d," +
+                        "\"application_limited\":%s,\"backlog_state\":\"%s\"," +
+                        "\"backlog_age_ns\":%d,\"backlog_probes\":%d," +
                         "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
@@ -653,6 +672,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_ack_repeated_packets\":%d,\"remote_ack_repeated_framesets\":%d," +
                         "\"remote_ack_protection\":%s,\"remote_ack_flush_delay_ns\":%d," +
                         "\"remote_ack_repeat_delay_ns\":%d," +
+                        "\"remote_demand_supported\":%s,\"remote_application_limited\":%s," +
+                        "\"remote_backlog_state\":\"%s\",\"remote_backlog_age_ns\":%d," +
+                        "\"remote_backlog_probes\":%d," +
                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
@@ -667,6 +689,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 applicationBatches, applicationBatchBytes, applicationBatchMaxBytes,
                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
+                applicationLimited, backlogState, backlogAgeNanos, backlogProbes,
                 adaptivePacingRate, adaptiveBytePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
@@ -689,6 +712,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 remoteApplicationBatchBytes(), remoteApplicationBatchMaxBytes(),
                 isRemoteAckPolicySupported(), remoteAckRepeatedPackets(), remoteAckRepeatedFrameSets(),
                 remoteAckProtection(), remoteAckFlushDelayNanos(), remoteAckRepeatDelayNanos(),
+                isRemoteDemandSupported(), remoteApplicationLimited(), remoteBacklogState(),
+                remoteBacklogAgeNanos(), remoteBacklogProbes(),
                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
@@ -761,6 +786,16 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             ? metricsSynchronizationHandler.getAckFlushDelayNanos() : 0L; }
     private long remoteAckRepeatDelayNanos() { return isRemoteAckPolicySupported()
             ? metricsSynchronizationHandler.getAckRepeatDelayNanos() : 0L; }
+    private boolean isRemoteDemandSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteDemandSupported(); }
+    private boolean remoteApplicationLimited() { return !isRemoteDemandSupported()
+            || metricsSynchronizationHandler.isApplicationLimited(); }
+    private String remoteBacklogState() { return isRemoteDemandSupported()
+            ? metricsSynchronizationHandler.getBacklogState() : "UNAVAILABLE"; }
+    private long remoteBacklogAgeNanos() { return isRemoteDemandSupported()
+            ? metricsSynchronizationHandler.getBacklogAgeNanos() : 0L; }
+    private long remoteBacklogProbes() { return isRemoteDemandSupported()
+            ? metricsSynchronizationHandler.getBacklogProbes() : 0L; }
     private String remoteCongestionReason() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionReason() : "UNAVAILABLE"; }
     private double remoteRttInflation() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttInflation() : 1D; }
     private boolean remotePacingCapped() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isPacingCapped(); }

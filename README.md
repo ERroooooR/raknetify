@@ -70,6 +70,11 @@ peak from transport queueing or a large compressed batch waiting for all RakNet 
 During sustained `RATE_LIMIT` loss, ACKs are automatically aggregated for 8-25 ms and at most one
 ACK is repeated per 100 ms. The `ack_*` and `remote_ack_*` fields show whether this bounded ACK
 protection is active and how many packets it added; no extra JVM property is required.
+Minecraft burst traffic is absorbed by the transport queue. A queue of at least 64 KiB that remains
+backlogged for 100 ms enters `BULK` mode and may raise pacing by 25% no more than once per 500 ms,
+only while loss, RTT, ECN and policer signals remain healthy. Channel 7 world/chunk frames stay
+below latency-sensitive reliable channels. The `application_limited`, `backlog_state`,
+`backlog_age_ns` and `backlog_probes` fields expose this behavior locally and for the remote peer.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable

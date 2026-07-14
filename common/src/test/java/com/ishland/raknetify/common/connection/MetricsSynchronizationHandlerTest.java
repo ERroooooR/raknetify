@@ -57,12 +57,13 @@ class MetricsSynchronizationHandlerTest {
         sender.applicationBatch(32768);
         sender.ackRepeated(3);
         sender.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
+        sender.adaptiveDemand(false, "BULK", 150_000_000L, 4L);
         sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(278, payload.readableBytes());
+            assertEquals(296, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -101,8 +102,31 @@ class MetricsSynchronizationHandlerTest {
             assertTrue(receiver.isAckProtection());
             assertEquals(8_000_000L, receiver.getAckFlushDelayNanos());
             assertEquals(10_000_000L, receiver.getAckRepeatDelayNanos());
+            assertTrue(receiver.isRemoteDemandSupported());
+            assertFalse(receiver.isApplicationLimited());
+            assertEquals("BULK", receiver.getBacklogState());
+            assertEquals(150_000_000L, receiver.getBacklogAgeNanos());
+            assertEquals(4L, receiver.getBacklogProbes());
             assertTrue(receiver.isPacingCapped());
             assertTrue(receiver.isBandwidthProbeSuppressed());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousAckPolicyExtensionRemainsReadableWithoutDemandTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(278);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteAckPolicySupported());
+            assertFalse(receiver.isRemoteDemandSupported());
         } finally {
             payload.release();
         }

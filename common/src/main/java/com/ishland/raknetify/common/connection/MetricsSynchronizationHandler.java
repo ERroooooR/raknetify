@@ -55,6 +55,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final int HOL_EXTENDED_SIZE = 64;
     private static final int APPLICATION_BATCH_EXTENDED_SIZE = 24;
     private static final int ACK_POLICY_EXTENDED_SIZE = 33;
+    private static final int DEMAND_EXTENDED_SIZE = 18;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -77,7 +78,8 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                buffer = this.ctx.alloc().buffer(1 + 8 + 4 + 4 + 8 + 4 + 4
                        + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE
                        + BYTE_PACING_EXTENDED_SIZE + HOL_EXTENDED_SIZE
-                       + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE);
+                       + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE
+                       + DEMAND_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -138,6 +140,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private boolean ackProtection;
     private long ackFlushDelayNanos;
     private long ackRepeatDelayNanos;
+    private boolean isRemoteDemandSupported;
+    private boolean applicationLimited = true;
+    private String backlogState = "IDLE";
+    private long backlogAgeNanos;
+    private long backlogProbes;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -222,6 +229,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public boolean isAckProtection() { return ackProtection; }
     public long getAckFlushDelayNanos() { return ackFlushDelayNanos; }
     public long getAckRepeatDelayNanos() { return ackRepeatDelayNanos; }
+    public boolean isRemoteDemandSupported() { return isRemoteDemandSupported; }
+    public boolean isApplicationLimited() { return applicationLimited; }
+    public String getBacklogState() { return backlogState; }
+    public long getBacklogAgeNanos() { return backlogAgeNanos; }
+    public long getBacklogProbes() { return backlogProbes; }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -269,6 +281,10 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         buffer.writeByte(logger.isAdaptiveAckProtection() ? 1 : 0);
         buffer.writeLong(logger.getAdaptiveAckFlushDelayNanos());
         buffer.writeLong(logger.getAdaptiveAckRepeatDelayNanos());
+        buffer.writeByte(logger.isApplicationLimited() ? 1 : 0);
+        buffer.writeByte(backlogStateCode(logger.getBacklogState()));
+        buffer.writeLong(logger.getBacklogAgeNanos());
+        buffer.writeLong(logger.getBacklogProbes());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -335,6 +351,13 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                                 this.ackFlushDelayNanos = byteBuf.readLong();
                                 this.ackRepeatDelayNanos = byteBuf.readLong();
                                 this.isRemoteAckPolicySupported = true;
+                                if (byteBuf.readableBytes() >= DEMAND_EXTENDED_SIZE) {
+                                    this.applicationLimited = byteBuf.readUnsignedByte() != 0;
+                                    this.backlogState = backlogState(byteBuf.readUnsignedByte());
+                                    this.backlogAgeNanos = byteBuf.readLong();
+                                    this.backlogProbes = byteBuf.readLong();
+                                    this.isRemoteDemandSupported = true;
+                                }
                             }
                         }
                     }
@@ -352,6 +375,22 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             case "QUEUE" -> 4;
             case "RATE_LIMIT" -> 5;
             default -> 0;
+        };
+    }
+
+    private static int backlogStateCode(String value) {
+        return switch (value) {
+            case "WARMUP" -> 1;
+            case "BULK" -> 2;
+            default -> 0;
+        };
+    }
+
+    private static String backlogState(int value) {
+        return switch (value) {
+            case 1 -> "WARMUP";
+            case 2 -> "BULK";
+            default -> "IDLE";
         };
     }
 

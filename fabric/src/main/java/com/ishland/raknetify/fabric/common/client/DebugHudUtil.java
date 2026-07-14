@@ -98,6 +98,11 @@ public class DebugHudUtil {
                                         .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
                                                 logger.getInFlightBytes() / 1024.0, logger.getEcnCeRatio() * 100.0));
                         consumer.accept(
+                                "[Raknetify] DEMAND: %s, APP_LIMITED: %s, AGE: %.1fms, PROBES: %d"
+                                        .formatted(logger.getBacklogState(), logger.isApplicationLimited() ? "Y" : "N",
+                                                logger.getBacklogAgeNanos() / 1_000_000.0,
+                                                logger.getBacklogProbes()));
+                        consumer.accept(
                                 "[Raknetify] RETX: NACK %.1fKiB, TO %.1fKiB, REORDER: %d/%d"
                                         .formatted(logger.getNackRetransmitBytes() / 1024.0,
                                                 logger.getTimeoutRetransmitBytes() / 1024.0,
@@ -156,6 +161,14 @@ public class DebugHudUtil {
                                                         serverSync.getOrderedOldestAgeNanos() / 1_000_000.0,
                                                         serverSync.getFragmentMaxAgeNanos() / 1_000_000.0,
                                                         serverSync.getOrderedMaxWaitNanos() / 1_000_000.0));
+                            }
+                            if (serverSync.isRemoteDemandSupported()) {
+                                consumer.accept(
+                                        "[Raknetify] S DEMAND: %s, APP_LIMITED: %s, AGE: %.1fms, PROBES: %d"
+                                                .formatted(serverSync.getBacklogState(),
+                                                        serverSync.isApplicationLimited() ? "Y" : "N",
+                                                        serverSync.getBacklogAgeNanos() / 1_000_000.0,
+                                                        serverSync.getBacklogProbes()));
                             }
                             if (serverSync.isRemoteApplicationBatchSupported()
                                     && serverSync.getApplicationBatches() > 0) {
