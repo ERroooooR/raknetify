@@ -64,17 +64,14 @@ socket. When enabled, the transport aggregates connection votes and uses a 2:1 m
 one JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
 loss classification, congestion-control mode/cwnd/in-flight bytes, ACK aggregation, ECN feedback,
 active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and small-write batching.
-It also records the byte-pacing ceiling, fragment-reassembly and ordered-queue head-of-line delay,
-plus actual external-compressor batch sizes. These fields distinguish a harmless per-tick display
-peak from transport queueing or a large compressed batch waiting for all RakNet fragments.
-During sustained `RATE_LIMIT` loss, ACKs are automatically aggregated for 8-25 ms and at most one
-ACK is repeated per 100 ms. The `ack_*` and `remote_ack_*` fields show whether this bounded ACK
-protection is active and how many packets it added; no extra JVM property is required.
-Minecraft burst traffic is absorbed by the transport queue. A queue of at least 64 KiB that remains
-backlogged for 100 ms enters `BULK` mode and may raise pacing by 25% no more than once per 500 ms,
-only while loss, RTT, ECN and policer signals remain healthy. Channel 7 world/chunk frames stay
-below latency-sensitive reliable channels. The `application_limited`, `backlog_state`,
-`backlog_age_ns` and `backlog_probes` fields expose this behavior locally and for the remote peer.
+It also records fragment-reassembly and ordered-queue head-of-line delay, plus actual
+external-compressor batch sizes. These fields distinguish a harmless per-tick display peak from
+transport queueing or a large compressed batch waiting for all RakNet fragments. The JSON schema
+still contains byte-pacing, adaptive ACK-policy and backlog-probe fields for log compatibility,
+but those active experiments were rolled back after public-network testing showed directional
+feedback mismatch and burst starvation. They now report neutral values (`0`, `false` and `IDLE`)
+and do not alter packet scheduling. Minecraft bursts use the stable packet pacing and priority
+logic; the conservative default ceiling remains 600 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
@@ -122,4 +119,3 @@ for the final fragment. A starting point of `batch_max_bytes: 32768` and `flush_
 both the client mod and Velocity plugin reduces that application-level head-of-line delay. This is
 an external-compressor setting rather than a Raknetify JVM property; the JSONL `application_*` and
 `remote_application_*` fields show the batch sizes actually observed after compression.
-
