@@ -41,7 +41,7 @@ JVM properties are available on both client and server:
 -Draknetify.adaptiveMinPps=50
 -Draknetify.adaptiveMaxPps=2000
 -Draknetify.smallWriteCoalesceMicros=250
--Draknetify.plpmtudMaxMtu=1500
+-Draknetify.plpmtudMaxMtu=1452
 -Draknetify.metricsJsonl=true
 ```
 
@@ -52,8 +52,9 @@ Protocol v12 is preferred and automatically falls back to v11 when an older endp
 initial request. Version 12 negotiates the RFC 8899-style DPLPMTUD state machine, model-based
 congestion window and bounded Reed-Solomon FEC; versions 9-11 never send extension packets.
 `plpmtudMaxMtu` is the local UDP payload ceiling and may be larger than the MTU established by the
-initial handshake. FEC activates only for measured random loss and remains disabled for burst loss
-and queue congestion.
+initial handshake. Its 1452-byte default leaves room for IPv6 and UDP headers on a conventional
+1500-byte path; IPv4-only deployments may explicitly test up to 1472. FEC activates only for
+measured random loss and remains disabled for burst loss and queue congestion.
 
 `adaptiveDscp` is disabled by default because all players on a server listener share one UDP
 socket. When enabled, the transport aggregates connection votes and uses a 2:1 majority plus a

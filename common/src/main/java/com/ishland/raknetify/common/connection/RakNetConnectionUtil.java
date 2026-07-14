@@ -68,7 +68,7 @@ public class RakNetConnectionUtil {
     public static final int DEFAULT_ADAPTIVE_MIN_PPS = configuredInt("raknetify.adaptiveMinPps", 50, 1, 100_000);
     public static final int DEFAULT_ADAPTIVE_MAX_PPS = configuredInt("raknetify.adaptiveMaxPps", 2000, 1, 100_000);
     public static final int DEFAULT_SMALL_WRITE_COALESCE_MICROS = configuredInt("raknetify.smallWriteCoalesceMicros", 250, 0, 100_000);
-    public static final int DEFAULT_PLPMTUD_MAX_MTU = configuredInt("raknetify.plpmtudMaxMtu", 1500, 576, 65_507);
+    public static final int DEFAULT_PLPMTUD_MAX_MTU = configuredInt("raknetify.plpmtudMaxMtu", 1452, 576, 65_507);
 
     private RakNetConnectionUtil() {
     }
