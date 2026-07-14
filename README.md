@@ -29,8 +29,9 @@ under unreliable and rate-limited connections.
 
 ## Adaptive transport options
 
-The bundled transport defaults to standard RakNet protocol v11 and a 1400-byte MTU. Adaptive
-pacing, rolling loss classification and safe MTU fallback are enabled by default. The following
+The bundled transport prefers RakNet protocol v12 and uses a 1400-byte MTU. Clients automatically
+fall back to v11 when required. Adaptive pacing, rolling loss classification and safe MTU fallback
+are enabled by default. The following
 JVM properties are available on both client and server:
 
 ```text

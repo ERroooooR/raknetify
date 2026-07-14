@@ -90,9 +90,10 @@ public class RakNetConnectionUtil {
             config.setAdaptiveMaxPps(Math.max(DEFAULT_ADAPTIVE_MIN_PPS, DEFAULT_ADAPTIVE_MAX_PPS));
             config.setSmallWriteCoalesceMicros(DEFAULT_SMALL_WRITE_COALESCE_MICROS);
             config.setPlpmtudMaxMtu(Math.max(config.getMTU(), DEFAULT_PLPMTUD_MAX_MTU));
-            if (config.getProtocolVersion() < DEFAULT_PROTOCOL_VERSION) {
-                config.setProtocolVersion(DEFAULT_PROTOCOL_VERSION);
-            }
+            // This is an explicit JVM override, not a minimum version. In particular,
+            // test and compatibility runs must be able to force v11 when netty-raknet
+            // itself defaults to v12.
+            config.setProtocolVersion(DEFAULT_PROTOCOL_VERSION);
 //            config.setIgnoreResendGauge(true);
 
             if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_INITIALIZED).get())) {
