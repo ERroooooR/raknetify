@@ -101,9 +101,38 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private static final Path METRICS_FILE = metricsFile();
     private static final BlockingQueue<String> METRICS_LINES = new ArrayBlockingQueue<>(8192);
     private static final AtomicLong METRICS_LINES_DROPPED = new AtomicLong();
+    private static final AtomicBoolean METRICS_WRITER_STARTED = new AtomicBoolean();
 
-    static {
-        if (METRICS_FILE != null && !METRICS_FILE_DISABLED.get()) startMetricsWriter();
+    public SimpleMetricsLogger() {
+        initializeMetricsExport();
+    }
+
+    /**
+     * Initializes the optional JSONL exporter without waiting for the first
+     * RakNet connection. Platform entry points call this method during startup.
+     */
+    public static void initializeMetricsExport() {
+        if (METRICS_FILE == null || METRICS_FILE_DISABLED.get()
+                || !METRICS_WRITER_STARTED.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            final Path parent = METRICS_FILE.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            // Validate and create the configured file synchronously. This makes
+            // startup failures visible even before a connection produces data.
+            try (BufferedWriter ignored = Files.newBufferedWriter(METRICS_FILE, StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)) {
+                // Intentionally empty.
+            }
+        } catch (IOException | RuntimeException e) {
+            disableMetricsExport("failed to initialize", e);
+            return;
+        }
+
+        System.out.println("Raknetify: metrics JSONL export enabled: " + METRICS_FILE);
+        startMetricsWriter();
     }
 
     @Override
@@ -428,9 +457,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         final String value = System.getProperty("raknetify.metricsJsonl", "").trim();
         if (value.isEmpty()) return null;
         try {
-            return Paths.get(value).toAbsolutePath();
-        } catch (RuntimeException ignored) {
+            return Paths.get(value).toAbsolutePath().normalize();
+        } catch (RuntimeException e) {
             METRICS_FILE_DISABLED.set(true);
+            System.err.println("Raknetify: invalid metrics JSONL path '" + value + "': " + e);
             return null;
         }
     }
@@ -469,8 +499,6 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private static void startMetricsWriter() {
         final Thread writerThread = new Thread(() -> {
             try {
-                final Path parent = METRICS_FILE.getParent();
-                if (parent != null) Files.createDirectories(parent);
                 try (BufferedWriter writer = Files.newBufferedWriter(METRICS_FILE, StandardCharsets.UTF_8,
                         java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)) {
                     while (!Thread.currentThread().isInterrupted()) {
@@ -482,13 +510,19 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 }
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
-            } catch (IOException | RuntimeException ignored) {
-                METRICS_FILE_DISABLED.set(true);
-                METRICS_LINES.clear();
+            } catch (IOException | RuntimeException e) {
+                disableMetricsExport("writer stopped", e);
             }
         }, "raknetify-metrics-writer");
         writerThread.setDaemon(true);
         writerThread.start();
+    }
+
+    private static void disableMetricsExport(String reason, Exception e) {
+        if (METRICS_FILE_DISABLED.compareAndSet(false, true)) {
+            System.err.println("Raknetify: metrics JSONL export " + reason + " for " + METRICS_FILE + ": " + e);
+        }
+        METRICS_LINES.clear();
     }
 
     // ========== Misc ==========

@@ -20,6 +20,7 @@
 
 package com.ishland.raknetify.velocity;
 
+import com.ishland.raknetify.common.connection.SimpleMetricsLogger;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.velocity.connection.RakNetVelocityConnectionUtil;
 import com.ishland.raknetify.velocity.init.VelocityPacketRegistryInjector;
@@ -47,6 +48,7 @@ public class RaknetifyVelocityLaunchWrapper {
             return;
         }
 
+        SimpleMetricsLogger.initializeMetricsExport();
         ProtocolMultiChannelMappings.init();
         VelocityPacketRegistryInjector.inject();
 

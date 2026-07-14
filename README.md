@@ -35,7 +35,7 @@ are enabled by default. The following
 JVM properties are available on both client and server:
 
 ```text
--Draknetify.adaptiveTransport=true
+-Draknetify.adaptiveTransport=false
 -Draknetify.adaptiveDscp=false
 -Draknetify.protocolVersion=12
 -Draknetify.adaptiveMinPps=50
@@ -44,6 +44,9 @@ JVM properties are available on both client and server:
 -Draknetify.plpmtudMaxMtu=1500
 -Draknetify.metricsJsonl=/path/to/raknetify-metrics.jsonl
 ```
+
+`adaptiveTransport` defaults to `true`; no JVM argument is required to enable it. Set the property
+to `false` only when comparing against the legacy fixed transport during testing.
 
 Protocol v12 is preferred and automatically falls back to v11 when an older endpoint rejects the
 initial request. Version 12 negotiates the RFC 8899-style DPLPMTUD state machine, model-based
@@ -60,7 +63,9 @@ socket. When enabled, the transport aggregates connection votes and uses a 2:1 m
 JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
 loss classification, congestion-control mode/cwnd/in-flight bytes, ACK aggregation, ECN feedback,
 active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and small-write batching.
-Use a separate output file per process. File errors disable the recorder without affecting traffic.
-Records enter a bounded non-blocking queue and a daemon writer flushes them off the Netty event
-loop. `export_dropped` reports queue saturation, so slow storage is visible without stalling players.
+Use a separate output file per process. The file and missing parent directories are created during
+mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
+the recorder without affecting traffic. Records enter a bounded non-blocking queue and a daemon
+writer flushes them off the Netty event loop. `export_dropped` reports queue saturation, so slow
+storage is visible without stalling players.
 
