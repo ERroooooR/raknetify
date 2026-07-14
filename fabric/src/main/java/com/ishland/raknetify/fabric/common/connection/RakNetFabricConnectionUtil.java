@@ -61,7 +61,14 @@ public class RakNetFabricConnectionUtil {
             }
             channel.attr(RAKNETIFY_INITIALIZED).set(true);
             RakNetConnectionUtil.initChannel(channel);
-            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID));
+            final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
+            // ZSTD_Compresser can batch several Minecraft packets into one frame.
+            // Keep those frames on one ordered RakNet channel because their
+            // original packet boundaries are no longer available for prioritizing.
+            multiChannelCodec.addHandler((buf, suppressWarning) ->
+                    channel.pipeline().get("zstd_encoder") != null ? 7 : 0
+            );
+            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }
 

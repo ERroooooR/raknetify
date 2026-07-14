@@ -75,10 +75,11 @@ public class DebugUtil {
                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                         )).append('\n');
 
-                b.append("Adaptive: %s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, MTU %d"
-                        .formatted(logger.getAdaptiveLossType(), logger.getAdaptivePacingRate(),
+                b.append("Adaptive: %s/%s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, RTT inflation %.2fx, capped %s, MTU %d"
+                        .formatted(logger.getAdaptiveLossType(), logger.getCongestionReason(), logger.getAdaptivePacingRate(),
                                 logger.getAdaptiveDeliveryRate() / 1024.0,
                                 logger.getAdaptiveLossRatio() * 100.0,
+                                logger.getRttInflation(), logger.isPacingCapped(),
                                 logger.getAdaptiveMTU() > 0 ? logger.getAdaptiveMTU() : config.getMTU()))
                         .append('\n');
                 b.append("Adaptive recovery: FEC %d/%d protected, expired %d; MTU probes %d/%d/%d"
@@ -101,6 +102,13 @@ public class DebugUtil {
                                     sync.getTX(), sync.getRX(),
                                     sync.getBurst()
                             )).append('\n');
+                    if (sync.isRemoteAdaptiveSupported()) {
+                        b.append("Remote adaptive: %s/%s, mode %s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, RTT inflation %.2fx, capped %s"
+                                .formatted(sync.getLossType(), sync.getCongestionReason(), sync.getCongestionMode(),
+                                        sync.getPacingRate(), sync.getDeliveryRate() / 1024.0,
+                                        sync.getLossRatio() * 100.0, sync.getRttInflation(), sync.isPacingCapped()))
+                                .append('\n');
+                    }
                 }
 
                 final MultiChannelingStreamingCompression compression = channel.pipeline().get(MultiChannelingStreamingCompression.class);

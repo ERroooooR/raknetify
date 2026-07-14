@@ -91,6 +91,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long bandwidthBytesPerSecond;
     private volatile long ackAggregationBytes;
     private volatile double ecnCeRatio;
+    private volatile String congestionReason = "NONE";
+    private volatile double rttInflation = 1D;
+    private volatile boolean pacingCapped;
+    private volatile boolean bandwidthProbeSuppressed;
     private volatile String pathMtuState = "SEARCHING";
     private volatile int pathMtuProbe;
     private volatile int pathMtuMaximum;
@@ -287,6 +291,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     @Override
+    public void congestionDiagnostics(String reason, double rttInflation, boolean pacingCapped,
+                                      boolean bandwidthProbeSuppressed) {
+        this.congestionReason = reason;
+        this.rttInflation = rttInflation;
+        this.pacingCapped = pacingCapped;
+        this.bandwidthProbeSuppressed = bandwidthProbeSuppressed;
+    }
+
+    @Override
     public void pathMtuState(String state, int confirmedMtu, int probeMtu, int maximumMtu) {
         this.pathMtuState = state;
         this.adaptiveMTU = confirmedMtu;
@@ -452,6 +465,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getBandwidthBytesPerSecond() { return bandwidthBytesPerSecond; }
     public long getAckAggregationBytes() { return ackAggregationBytes; }
     public double getEcnCeRatio() { return ecnCeRatio; }
+    public String getCongestionReason() { return congestionReason; }
+    public double getRttInflation() { return rttInflation; }
+    public boolean isPacingCapped() { return pacingCapped; }
+    public boolean isBandwidthProbeSuppressed() { return bandwidthProbeSuppressed; }
     public String getPathMtuState() { return pathMtuState; }
     public int getPathMtuProbe() { return pathMtuProbe; }
     public int getPathMtuMaximum() { return pathMtuMaximum; }
@@ -473,7 +490,14 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     private void appendMetricsJsonl(long timestamp) {
         if (METRICS_FILE == null || METRICS_FILE_DISABLED.get()) return;
-        final String line = String.format(Locale.ROOT,
+        final String line = formatMetricsJsonl(timestamp);
+        if (!METRICS_LINES.offer(line)) {
+            METRICS_LINES_DROPPED.incrementAndGet();
+        }
+    }
+
+    String formatMetricsJsonl(long timestamp) {
+        return String.format(Locale.ROOT,
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
                         "\"reliable_frame_duplicates\":%d," +
@@ -485,8 +509,17 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"small_write_delay_ns\":%d,\"pacing_delay_ns\":%d," +
                         "\"cc_mode\":\"%s\",\"cwnd_bytes\":%d,\"inflight_bytes\":%d," +
                         "\"bandwidth_bps\":%d,\"ack_aggregation_bytes\":%d,\"ecn_ce_ratio\":%.6f," +
+                        "\"congestion_reason\":\"%s\",\"rtt_inflation\":%.6f," +
+                        "\"pacing_capped\":%s,\"bandwidth_probe_suppressed\":%s," +
                         "\"plpmtud_state\":\"%s\",\"plpmtud_probe\":%d,\"plpmtud_max\":%d," +
                         "\"fec_data_shards\":%d,\"fec_parity_shards\":%d,\"fec_recovery_ratio\":%.6f," +
+                        "\"remote_adaptive_supported\":%s,\"remote_rtt_ns\":%d,\"remote_rtt_stddev_ns\":%d," +
+                        "\"remote_pacing_pps\":%.3f,\"remote_delivery_bps\":%d,\"remote_loss_ratio\":%.6f," +
+                        "\"remote_loss_type\":\"%s\",\"remote_cc_mode\":\"%s\"," +
+                        "\"remote_cwnd_bytes\":%d,\"remote_inflight_bytes\":%d,\"remote_bandwidth_bps\":%d," +
+                        "\"remote_reliable_frame_duplicates\":%d,\"remote_congestion_reason\":\"%s\"," +
+                        "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
+                        "\"remote_bandwidth_probe_suppressed\":%s," +
                         "\"export_dropped\":%d}%n",
                 timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
@@ -496,13 +529,37 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
                 congestionMode, congestionWindowBytes, inFlightBytes, bandwidthBytesPerSecond,
-                ackAggregationBytes, ecnCeRatio, pathMtuState, pathMtuProbe, pathMtuMaximum,
+                ackAggregationBytes, ecnCeRatio, congestionReason, rttInflation,
+                pacingCapped, bandwidthProbeSuppressed,
+                pathMtuState, pathMtuProbe, pathMtuMaximum,
                 fecDataShards, fecParityShards, fecRecoveryRatio,
+                isRemoteAdaptiveSupported(), remoteRttNanos(), remoteRttStdDevNanos(),
+                remotePacingRate(), remoteDeliveryRate(), remoteLossRatio(), remoteLossType(), remoteCongestionMode(),
+                remoteCongestionWindow(), remoteInFlight(), remoteBandwidth(), remoteReliableFrameDuplicates(),
+                remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
-        if (!METRICS_LINES.offer(line)) {
-            METRICS_LINES_DROPPED.incrementAndGet();
-        }
     }
+
+    private boolean isRemoteAdaptiveSupported() {
+        return metricsSynchronizationHandler != null
+                && metricsSynchronizationHandler.isRemoteAdaptiveSupported();
+    }
+
+    private long remoteRttNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttNanos() : 0L; }
+    private long remoteRttStdDevNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttStdDevNanos() : 0L; }
+    private double remotePacingRate() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getPacingRate() : 0D; }
+    private long remoteDeliveryRate() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getDeliveryRate() : 0L; }
+    private double remoteLossRatio() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getLossRatio() : 0D; }
+    private String remoteLossType() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getLossType() : "UNAVAILABLE"; }
+    private String remoteCongestionMode() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionMode() : "UNAVAILABLE"; }
+    private long remoteCongestionWindow() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionWindow() : 0L; }
+    private long remoteInFlight() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getInFlight() : 0L; }
+    private long remoteBandwidth() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getBandwidth() : 0L; }
+    private long remoteReliableFrameDuplicates() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getReliableFrameDuplicates() : 0L; }
+    private String remoteCongestionReason() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionReason() : "UNAVAILABLE"; }
+    private double remoteRttInflation() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttInflation() : 1D; }
+    private boolean remotePacingCapped() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isPacingCapped(); }
+    private boolean remoteBandwidthProbeSuppressed() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isBandwidthProbeSuppressed(); }
 
     private static void startMetricsWriter() {
         final Thread writerThread = new Thread(() -> {

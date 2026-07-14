@@ -85,11 +85,13 @@ public class DebugHudUtil {
                                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                                         ));
                         consumer.accept(
-                                "[Raknetify] ADP: %s, %.0fpps, %.1fKiB/s, LOSS: %.2f%%, FEC: %d"
-                                        .formatted(logger.getAdaptiveLossType(), logger.getAdaptivePacingRate(),
+                                "[Raknetify] ADP: %s/%s, %.0fpps, %.1fKiB/s, LOSS: %.2f%%, RTTx: %.2f, CAP: %s, FEC: %d"
+                                        .formatted(logger.getAdaptiveLossType(), logger.getCongestionReason(),
+                                                logger.getAdaptivePacingRate(),
                                                 logger.getAdaptiveDeliveryRate() / 1024.0,
                                                 logger.getAdaptiveLossRatio() * 100.0,
-                                                 logger.getFecRecovered()));
+                                                logger.getRttInflation(), logger.isPacingCapped() ? "Y" : "N",
+                                                logger.getFecRecovered()));
                         consumer.accept(
                                 "[Raknetify] CC: %s, CWND: %.1fKiB, FLIGHT: %.1fKiB, ECN: %.2f%%"
                                         .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
@@ -108,6 +110,13 @@ public class DebugHudUtil {
                                                     serverSync.getTX(), serverSync.getRX(),
                                                     serverSync.getBurst()
                                             ));
+                            if (serverSync.isRemoteAdaptiveSupported()) {
+                                consumer.accept(
+                                        "[Raknetify] S ADP: %s/%s, %.0fpps, LOSS: %.2f%%, RTTx: %.2f, CAP: %s"
+                                                .formatted(serverSync.getLossType(), serverSync.getCongestionReason(),
+                                                        serverSync.getPacingRate(), serverSync.getLossRatio() * 100.0,
+                                                        serverSync.getRttInflation(), serverSync.isPacingCapped() ? "Y" : "N"));
+                            }
                         }
                     } else {
                         consumer.accept(

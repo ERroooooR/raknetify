@@ -92,9 +92,12 @@ Raknetify automatically disables its streaming Deflate layer for RakNet connecti
 BandwidthOptimizer integration, Raknetify keeps Velocity's `SetCompression` packet intact because
 ZSTD_Compresser uses it to switch the client and proxy pipelines to Zstd at the same time. This
 prevents compressed bytes from being decoded as a Minecraft packet (for example, `Received unknown
-packet id 764`) while retaining RakNet transport, multi-channel packet priorities, reliability and
-adaptive networking optimizations. If BandwidthOptimizer is installed as well, ZSTD_Compresser's
-required compression negotiation takes precedence and is not suppressed.
+packet id 764`). Raknetify also removes ZSTD_Compresser's redundant TCP frame-length prefix on
+Velocity before creating a RakNet frame. RakNet transport, reliability and adaptive networking
+optimizations remain active. While ZSTD batching is active, its frames use one ordered RakNet
+channel because the original packet boundaries needed for safe multi-channel prioritization no
+longer exist. If BandwidthOptimizer is installed as well, ZSTD_Compresser's required compression
+negotiation takes precedence and is not suppressed.
 
 Velocity plugin detection uses the registered plugin id so it works across Velocity's isolated
 plugin class loaders. Client detection uses the shared runtime class path and therefore also works
