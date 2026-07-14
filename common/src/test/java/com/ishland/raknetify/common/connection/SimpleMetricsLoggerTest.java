@@ -39,6 +39,12 @@ class SimpleMetricsLoggerTest {
         logger.reorderedPacket(2);
         logger.nackRetransmit(1400);
         logger.timeoutRetransmit(700);
+        logger.adaptiveBytePacingRate(512000L);
+        logger.fragmentReassemblyPending(2, 8192L, 5_000_000L);
+        logger.fragmentReassemblyComplete(4096, 8_000_000L);
+        logger.orderedQueuePending(3, 6_000_000L);
+        logger.orderedQueueRelease(4, 9_000_000L);
+        logger.applicationBatch(32768);
 
         final String line = assertDoesNotThrow(() -> logger.formatMetricsJsonl(123L));
 
@@ -49,6 +55,11 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"reordered_packets\":2"));
         assertTrue(line.contains("\"nack_retransmit_bytes\":1400"));
         assertTrue(line.contains("\"timeout_retransmit_bytes\":700"));
+        assertTrue(line.contains("\"byte_pacing_bps\":512000"));
+        assertTrue(line.contains("\"fragment_pending_builders\":2"));
+        assertTrue(line.contains("\"ordered_pending_frames\":3"));
+        assertTrue(line.contains("\"application_batches\":1"));
+        assertTrue(line.contains("\"application_batch_max_bytes\":32768"));
         assertTrue(line.contains("\"remote_supported\":false"));
         assertTrue(line.contains("\"remote_recovery_supported\":false"));
         assertTrue(line.contains("\"remote_loss_type\":\"UNAVAILABLE\""));

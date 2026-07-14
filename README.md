@@ -39,7 +39,7 @@ JVM properties are available on both client and server:
 -Draknetify.adaptiveDscp=false
 -Draknetify.protocolVersion=12
 -Draknetify.adaptiveMinPps=50
--Draknetify.adaptiveMaxPps=2000
+-Draknetify.adaptiveMaxPps=600
 -Draknetify.smallWriteCoalesceMicros=250
 -Draknetify.plpmtudMaxMtu=1452
 -Draknetify.metricsJsonl=true
@@ -64,6 +64,9 @@ socket. When enabled, the transport aggregates connection votes and uses a 2:1 m
 one JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
 loss classification, congestion-control mode/cwnd/in-flight bytes, ACK aggregation, ECN feedback,
 active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and small-write batching.
+It also records the byte-pacing ceiling, fragment-reassembly and ordered-queue head-of-line delay,
+plus actual external-compressor batch sizes. These fields distinguish a harmless per-tick display
+peak from transport queueing or a large compressed batch waiting for all RakNet fragments.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
@@ -104,4 +107,11 @@ plugin class loaders. Client detection uses the shared runtime class path and th
 when Raknetify runs through Sinytra Connector. Compatibility is enabled by default and can be
 disabled for comparison testing with `-Draknetify.zstdCompresserCompatibility=false` on both the
 client and Velocity.
+
+For latency-sensitive RakNet links, ZSTD_Compresser's default `batch_max_bytes: 65536` and
+`flush_interval_ms: 10` can create visible bursts and make every packet in a compressed batch wait
+for the final fragment. A starting point of `batch_max_bytes: 32768` and `flush_interval_ms: 5` on
+both the client mod and Velocity plugin reduces that application-level head-of-line delay. This is
+an external-compressor setting rather than a Raknetify JVM property; the JSONL `application_*` and
+`remote_application_*` fields show the batch sizes actually observed after compression.
 

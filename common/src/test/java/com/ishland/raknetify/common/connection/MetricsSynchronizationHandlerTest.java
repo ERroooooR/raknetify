@@ -39,6 +39,7 @@ class MetricsSynchronizationHandlerTest {
         final SimpleMetricsLogger sender = new SimpleMetricsLogger();
         sender.currentQueuedBytes(1234);
         sender.adaptivePacingRate(37.5D);
+        sender.adaptiveBytePacingRate(524288L);
         sender.adaptiveDeliveryRate(45678L);
         sender.adaptiveLoss(0.125D, 70L, 10L);
         sender.adaptiveLossType("RATE_LIMIT");
@@ -48,12 +49,18 @@ class MetricsSynchronizationHandlerTest {
         sender.reorderedPacket(5);
         sender.nackRetransmit(4096);
         sender.timeoutRetransmit(1024);
+        sender.fragmentReassemblyPending(2, 65536L, 20_000_000L);
+        sender.fragmentReassemblyComplete(32768, 30_000_000L);
+        sender.orderedQueuePending(3, 40_000_000L);
+        sender.orderedQueueRelease(4, 50_000_000L);
+        sender.applicationBatch(16384);
+        sender.applicationBatch(32768);
         sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(149, payload.readableBytes());
+            assertEquals(245, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -70,8 +77,45 @@ class MetricsSynchronizationHandlerTest {
             assertEquals(5L, receiver.getReorderedPackets());
             assertEquals(4096L, receiver.getNackRetransmitBytes());
             assertEquals(1024L, receiver.getTimeoutRetransmitBytes());
+            assertTrue(receiver.isRemoteBytePacingSupported());
+            assertEquals(524288L, receiver.getBytePacingRate());
+            assertTrue(receiver.isRemoteHolSupported());
+            assertEquals(2, receiver.getFragmentPendingBuilders());
+            assertEquals(65536L, receiver.getFragmentPendingBytes());
+            assertEquals(20_000_000L, receiver.getFragmentOldestAgeNanos());
+            assertEquals(1L, receiver.getFragmentCompleted());
+            assertEquals(30_000_000L, receiver.getFragmentMaxAgeNanos());
+            assertEquals(3, receiver.getOrderedPendingFrames());
+            assertEquals(40_000_000L, receiver.getOrderedOldestAgeNanos());
+            assertEquals(4L, receiver.getOrderedReleasedFrames());
+            assertEquals(50_000_000L, receiver.getOrderedMaxWaitNanos());
+            assertTrue(receiver.isRemoteApplicationBatchSupported());
+            assertEquals(2L, receiver.getApplicationBatches());
+            assertEquals(49152L, receiver.getApplicationBatchBytes());
+            assertEquals(32768L, receiver.getApplicationBatchMaxBytes());
             assertTrue(receiver.isPacingCapped());
             assertTrue(receiver.isBandwidthProbeSuppressed());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousRecoveryExtensionRemainsReadableWithoutBytePacingTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.nackDeferred(9);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(149);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteRecoverySupported());
+            assertEquals(9L, receiver.getNacksDeferred());
+            assertFalse(receiver.isRemoteBytePacingSupported());
+            assertFalse(receiver.isRemoteHolSupported());
+            assertFalse(receiver.isRemoteApplicationBatchSupported());
         } finally {
             payload.release();
         }

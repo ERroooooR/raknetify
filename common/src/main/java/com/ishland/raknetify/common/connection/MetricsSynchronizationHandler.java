@@ -51,6 +51,9 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final byte VERSION = 0x00;
     private static final int ADAPTIVE_EXTENDED_SIZE = 84;
     private static final int RECOVERY_EXTENDED_SIZE = 32;
+    private static final int BYTE_PACING_EXTENDED_SIZE = 8;
+    private static final int HOL_EXTENDED_SIZE = 64;
+    private static final int APPLICATION_BATCH_EXTENDED_SIZE = 24;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -71,7 +74,9 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             ByteBuf buffer = null;
            try {
                buffer = this.ctx.alloc().buffer(1 + 8 + 4 + 4 + 8 + 4 + 4
-                       + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE);
+                       + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE
+                       + BYTE_PACING_EXTENDED_SIZE + HOL_EXTENDED_SIZE
+                       + APPLICATION_BATCH_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -110,6 +115,22 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private long reorderedPackets;
     private long nackRetransmitBytes;
     private long timeoutRetransmitBytes;
+    private boolean isRemoteBytePacingSupported;
+    private long bytePacingRate;
+    private boolean isRemoteHolSupported;
+    private int fragmentPendingBuilders;
+    private long fragmentPendingBytes;
+    private long fragmentOldestAgeNanos;
+    private long fragmentCompleted;
+    private long fragmentMaxAgeNanos;
+    private int orderedPendingFrames;
+    private long orderedOldestAgeNanos;
+    private long orderedReleasedFrames;
+    private long orderedMaxWaitNanos;
+    private boolean isRemoteApplicationBatchSupported;
+    private long applicationBatches;
+    private long applicationBatchBytes;
+    private long applicationBatchMaxBytes;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -172,6 +193,22 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public long getReorderedPackets() { return reorderedPackets; }
     public long getNackRetransmitBytes() { return nackRetransmitBytes; }
     public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
+    public boolean isRemoteBytePacingSupported() { return isRemoteBytePacingSupported; }
+    public long getBytePacingRate() { return bytePacingRate; }
+    public boolean isRemoteHolSupported() { return isRemoteHolSupported; }
+    public int getFragmentPendingBuilders() { return fragmentPendingBuilders; }
+    public long getFragmentPendingBytes() { return fragmentPendingBytes; }
+    public long getFragmentOldestAgeNanos() { return fragmentOldestAgeNanos; }
+    public long getFragmentCompleted() { return fragmentCompleted; }
+    public long getFragmentMaxAgeNanos() { return fragmentMaxAgeNanos; }
+    public int getOrderedPendingFrames() { return orderedPendingFrames; }
+    public long getOrderedOldestAgeNanos() { return orderedOldestAgeNanos; }
+    public long getOrderedReleasedFrames() { return orderedReleasedFrames; }
+    public long getOrderedMaxWaitNanos() { return orderedMaxWaitNanos; }
+    public boolean isRemoteApplicationBatchSupported() { return isRemoteApplicationBatchSupported; }
+    public long getApplicationBatches() { return applicationBatches; }
+    public long getApplicationBatchBytes() { return applicationBatchBytes; }
+    public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -201,6 +238,19 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         buffer.writeLong(logger.getReorderedPackets());
         buffer.writeLong(logger.getNackRetransmitBytes());
         buffer.writeLong(logger.getTimeoutRetransmitBytes());
+        buffer.writeLong(logger.getAdaptiveBytePacingRate());
+        buffer.writeInt(logger.getFragmentPendingBuilders());
+        buffer.writeLong(logger.getFragmentPendingBytes());
+        buffer.writeLong(logger.getFragmentOldestAgeNanos());
+        buffer.writeLong(logger.getFragmentCompleted());
+        buffer.writeLong(logger.getFragmentMaxAgeNanos());
+        buffer.writeInt(logger.getOrderedPendingFrames());
+        buffer.writeLong(logger.getOrderedOldestAgeNanos());
+        buffer.writeLong(logger.getOrderedReleasedFrames());
+        buffer.writeLong(logger.getOrderedMaxWaitNanos());
+        buffer.writeLong(logger.getApplicationBatches());
+        buffer.writeLong(logger.getApplicationBatchBytes());
+        buffer.writeLong(logger.getApplicationBatchMaxBytes());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -241,6 +291,28 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                 this.nackRetransmitBytes = byteBuf.readLong();
                 this.timeoutRetransmitBytes = byteBuf.readLong();
                 this.isRemoteRecoverySupported = true;
+                if (byteBuf.readableBytes() >= BYTE_PACING_EXTENDED_SIZE) {
+                    this.bytePacingRate = byteBuf.readLong();
+                    this.isRemoteBytePacingSupported = true;
+                    if (byteBuf.readableBytes() >= HOL_EXTENDED_SIZE) {
+                        this.fragmentPendingBuilders = byteBuf.readInt();
+                        this.fragmentPendingBytes = byteBuf.readLong();
+                        this.fragmentOldestAgeNanos = byteBuf.readLong();
+                        this.fragmentCompleted = byteBuf.readLong();
+                        this.fragmentMaxAgeNanos = byteBuf.readLong();
+                        this.orderedPendingFrames = byteBuf.readInt();
+                        this.orderedOldestAgeNanos = byteBuf.readLong();
+                        this.orderedReleasedFrames = byteBuf.readLong();
+                        this.orderedMaxWaitNanos = byteBuf.readLong();
+                        this.isRemoteHolSupported = true;
+                        if (byteBuf.readableBytes() >= APPLICATION_BATCH_EXTENDED_SIZE) {
+                            this.applicationBatches = byteBuf.readLong();
+                            this.applicationBatchBytes = byteBuf.readLong();
+                            this.applicationBatchMaxBytes = byteBuf.readLong();
+                            this.isRemoteApplicationBatchSupported = true;
+                        }
+                    }
+                }
             }
         }
         return true;

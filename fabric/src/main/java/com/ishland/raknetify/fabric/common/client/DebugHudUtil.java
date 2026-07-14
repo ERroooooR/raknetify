@@ -85,9 +85,10 @@ public class DebugHudUtil {
                                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                                         ));
                         consumer.accept(
-                                "[Raknetify] ADP: %s/%s, %.0fpps, %.1fKiB/s, LOSS: %.2f%%, RTTx: %.2f, CAP: %s, FEC: %d"
+                                "[Raknetify] ADP: %s/%s, %.0fpps, PACE: %.1fKiB/s, DEL: %.1fKiB/s, LOSS: %.2f%%, RTTx: %.2f, CAP: %s, FEC: %d"
                                         .formatted(logger.getAdaptiveLossType(), logger.getCongestionReason(),
                                                 logger.getAdaptivePacingRate(),
+                                                logger.getAdaptiveBytePacingRate() / 1024.0,
                                                 logger.getAdaptiveDeliveryRate() / 1024.0,
                                                 logger.getAdaptiveLossRatio() * 100.0,
                                                 logger.getRttInflation(), logger.isPacingCapped() ? "Y" : "N",
@@ -101,6 +102,22 @@ public class DebugHudUtil {
                                         .formatted(logger.getNackRetransmitBytes() / 1024.0,
                                                 logger.getTimeoutRetransmitBytes() / 1024.0,
                                                 logger.getReorderedPackets(), logger.getNacksDeferred()));
+                        consumer.accept(
+                                "[Raknetify] HOL: FRAG %d/%.1fKiB/%.1fms, ORDER %d/%.1fms, MAX %.1f/%.1fms"
+                                        .formatted(logger.getFragmentPendingBuilders(),
+                                                logger.getFragmentPendingBytes() / 1024.0,
+                                                logger.getFragmentOldestAgeNanos() / 1_000_000.0,
+                                                logger.getOrderedPendingFrames(),
+                                                logger.getOrderedOldestAgeNanos() / 1_000_000.0,
+                                                logger.getFragmentMaxAgeNanos() / 1_000_000.0,
+                                                logger.getOrderedMaxWaitNanos() / 1_000_000.0));
+                        if (logger.getApplicationBatches() > 0) {
+                            consumer.accept(
+                                    "[Raknetify] ZSTD: %d batches, %.1fMiB, MAX %.1fKiB"
+                                            .formatted(logger.getApplicationBatches(),
+                                                    logger.getApplicationBatchBytes() / 1024.0 / 1024.0,
+                                                    logger.getApplicationBatchMaxBytes() / 1024.0));
+                        }
                         consumer.accept(
                                 "[Raknetify] PMTU: %s %d/%d/%d, RS: %d+%d (%.1f%%)"
                                         .formatted(logger.getPathMtuState(), logger.getAdaptiveMTU(),
@@ -117,10 +134,30 @@ public class DebugHudUtil {
                                             ));
                             if (serverSync.isRemoteAdaptiveSupported()) {
                                 consumer.accept(
-                                        "[Raknetify] S ADP: %s/%s, %.0fpps, LOSS: %.2f%%, RTTx: %.2f, CAP: %s"
+                                        "[Raknetify] S ADP: %s/%s, %.0fpps, PACE: %.1fKiB/s, LOSS: %.2f%%, RTTx: %.2f, CAP: %s"
                                                 .formatted(serverSync.getLossType(), serverSync.getCongestionReason(),
-                                                        serverSync.getPacingRate(), serverSync.getLossRatio() * 100.0,
+                                                        serverSync.getPacingRate(), serverSync.getBytePacingRate() / 1024.0,
+                                                        serverSync.getLossRatio() * 100.0,
                                                         serverSync.getRttInflation(), serverSync.isPacingCapped() ? "Y" : "N"));
+                            }
+                            if (serverSync.isRemoteHolSupported()) {
+                                consumer.accept(
+                                        "[Raknetify] S HOL: FRAG %d/%.1fKiB/%.1fms, ORDER %d/%.1fms, MAX %.1f/%.1fms"
+                                                .formatted(serverSync.getFragmentPendingBuilders(),
+                                                        serverSync.getFragmentPendingBytes() / 1024.0,
+                                                        serverSync.getFragmentOldestAgeNanos() / 1_000_000.0,
+                                                        serverSync.getOrderedPendingFrames(),
+                                                        serverSync.getOrderedOldestAgeNanos() / 1_000_000.0,
+                                                        serverSync.getFragmentMaxAgeNanos() / 1_000_000.0,
+                                                        serverSync.getOrderedMaxWaitNanos() / 1_000_000.0));
+                            }
+                            if (serverSync.isRemoteApplicationBatchSupported()
+                                    && serverSync.getApplicationBatches() > 0) {
+                                consumer.accept(
+                                        "[Raknetify] S ZSTD: %d batches, %.1fMiB, MAX %.1fKiB"
+                                                .formatted(serverSync.getApplicationBatches(),
+                                                        serverSync.getApplicationBatchBytes() / 1024.0 / 1024.0,
+                                                        serverSync.getApplicationBatchMaxBytes() / 1024.0));
                             }
                             if (serverSync.isRemoteRecoverySupported()) {
                                 consumer.accept(

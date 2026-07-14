@@ -55,6 +55,19 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long reorderedPackets = 0L;
     private volatile long nackRetransmitBytes = 0L;
     private volatile long timeoutRetransmitBytes = 0L;
+    private volatile int fragmentPendingBuilders = 0;
+    private volatile long fragmentPendingBytes = 0L;
+    private volatile long fragmentOldestAgeNanos = 0L;
+    private volatile long fragmentCompleted = 0L;
+    private volatile long fragmentCompletedBytes = 0L;
+    private volatile long fragmentMaxAgeNanos = 0L;
+    private volatile int orderedPendingFrames = 0;
+    private volatile long orderedOldestAgeNanos = 0L;
+    private volatile long orderedReleasedFrames = 0L;
+    private volatile long orderedMaxWaitNanos = 0L;
+    private volatile long applicationBatches = 0L;
+    private volatile long applicationBatchBytes = 0L;
+    private volatile long applicationBatchMaxBytes = 0L;
     private volatile long framesError = 0L;
     private volatile long bytesIn = 0L;
     private volatile long packetsOut = 0L;
@@ -71,6 +84,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long measureBurstTokens = 0L;
     private volatile int currentQueuedBytes = 0;
     private volatile double adaptivePacingRate;
+    private volatile long adaptiveBytePacingRate;
     private volatile long adaptiveDeliveryRate;
     private volatile double adaptiveLossRatio;
     private volatile long adaptiveAcknowledged;
@@ -172,6 +186,39 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public void timeoutRetransmit(int bytes) { timeoutRetransmitBytes += bytes; }
 
     @Override
+    public void fragmentReassemblyPending(int builders, long bytes, long oldestAgeNanos) {
+        fragmentPendingBuilders = builders;
+        fragmentPendingBytes = bytes;
+        fragmentOldestAgeNanos = oldestAgeNanos;
+    }
+
+    @Override
+    public void fragmentReassemblyComplete(int bytes, long ageNanos) {
+        fragmentCompleted++;
+        fragmentCompletedBytes += bytes;
+        fragmentMaxAgeNanos = Math.max(fragmentMaxAgeNanos, ageNanos);
+    }
+
+    @Override
+    public void orderedQueuePending(int frames, long oldestAgeNanos) {
+        orderedPendingFrames = frames;
+        orderedOldestAgeNanos = oldestAgeNanos;
+    }
+
+    @Override
+    public void orderedQueueRelease(int frames, long oldestWaitNanos) {
+        orderedReleasedFrames += frames;
+        orderedMaxWaitNanos = Math.max(orderedMaxWaitNanos, oldestWaitNanos);
+    }
+
+    @Override
+    public void applicationBatch(int bytes) {
+        applicationBatches++;
+        applicationBatchBytes += bytes;
+        applicationBatchMaxBytes = Math.max(applicationBatchMaxBytes, bytes);
+    }
+
+    @Override
     public void frameError(int delta) {
         framesError += delta;
     }
@@ -245,6 +292,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void adaptivePacingRate(double packetsPerSecond) { adaptivePacingRate = packetsPerSecond; }
+
+    @Override
+    public void adaptiveBytePacingRate(long bytesPerSecond) { adaptiveBytePacingRate = bytesPerSecond; }
 
     @Override
     public void adaptiveDeliveryRate(long bytesPerSecond) { adaptiveDeliveryRate = bytesPerSecond; }
@@ -457,6 +507,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     public double getAdaptivePacingRate() { return adaptivePacingRate; }
+    public long getAdaptiveBytePacingRate() { return adaptiveBytePacingRate; }
     public long getAdaptiveDeliveryRate() { return adaptiveDeliveryRate; }
     public double getAdaptiveLossRatio() { return adaptiveLossRatio; }
     public long getAdaptiveAcknowledged() { return adaptiveAcknowledged; }
@@ -493,6 +544,19 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getReorderedPackets() { return reorderedPackets; }
     public long getNackRetransmitBytes() { return nackRetransmitBytes; }
     public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
+    public int getFragmentPendingBuilders() { return fragmentPendingBuilders; }
+    public long getFragmentPendingBytes() { return fragmentPendingBytes; }
+    public long getFragmentOldestAgeNanos() { return fragmentOldestAgeNanos; }
+    public long getFragmentCompleted() { return fragmentCompleted; }
+    public long getFragmentCompletedBytes() { return fragmentCompletedBytes; }
+    public long getFragmentMaxAgeNanos() { return fragmentMaxAgeNanos; }
+    public int getOrderedPendingFrames() { return orderedPendingFrames; }
+    public long getOrderedOldestAgeNanos() { return orderedOldestAgeNanos; }
+    public long getOrderedReleasedFrames() { return orderedReleasedFrames; }
+    public long getOrderedMaxWaitNanos() { return orderedMaxWaitNanos; }
+    public long getApplicationBatches() { return applicationBatches; }
+    public long getApplicationBatchBytes() { return applicationBatchBytes; }
+    public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
     public int getFecDataShards() { return fecDataShards; }
     public int getFecParityShards() { return fecParityShards; }
     public double getFecRecoveryRatio() { return fecRecoveryRatio; }
@@ -523,7 +587,14 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"reliable_frame_duplicates\":%d,\"nack_deferred\":%d," +
                         "\"reordered_packets\":%d,\"nack_retransmit_bytes\":%d," +
                         "\"timeout_retransmit_bytes\":%d," +
-                        "\"pacing_pps\":%.3f,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
+                        "\"fragment_pending_builders\":%d,\"fragment_pending_bytes\":%d," +
+                        "\"fragment_oldest_age_ns\":%d,\"fragment_completed\":%d," +
+                        "\"fragment_completed_bytes\":%d,\"fragment_max_age_ns\":%d," +
+                        "\"ordered_pending_frames\":%d,\"ordered_oldest_age_ns\":%d," +
+                        "\"ordered_released_frames\":%d,\"ordered_max_wait_ns\":%d," +
+                        "\"application_batches\":%d,\"application_batch_bytes\":%d," +
+                        "\"application_batch_max_bytes\":%d," +
+                        "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
                         "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
@@ -538,12 +609,21 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_supported\":%s,\"remote_queued_bytes\":%d,\"remote_burst\":%d," +
                         "\"remote_error_rate\":%.6f,\"remote_tx_pps\":%d,\"remote_rx_pps\":%d," +
                         "\"remote_adaptive_supported\":%s,\"remote_rtt_ns\":%d,\"remote_rtt_stddev_ns\":%d," +
-                        "\"remote_pacing_pps\":%.3f,\"remote_delivery_bps\":%d,\"remote_loss_ratio\":%.6f," +
+                        "\"remote_pacing_pps\":%.3f,\"remote_byte_pacing_bps\":%d," +
+                        "\"remote_delivery_bps\":%d,\"remote_loss_ratio\":%.6f," +
                         "\"remote_loss_type\":\"%s\",\"remote_cc_mode\":\"%s\"," +
                         "\"remote_cwnd_bytes\":%d,\"remote_inflight_bytes\":%d,\"remote_bandwidth_bps\":%d," +
                         "\"remote_reliable_frame_duplicates\":%d,\"remote_recovery_supported\":%s," +
                         "\"remote_nack_deferred\":%d,\"remote_reordered_packets\":%d," +
                         "\"remote_nack_retransmit_bytes\":%d,\"remote_timeout_retransmit_bytes\":%d," +
+                        "\"remote_fragment_pending_builders\":%d,\"remote_fragment_pending_bytes\":%d," +
+                        "\"remote_fragment_oldest_age_ns\":%d,\"remote_fragment_completed\":%d," +
+                        "\"remote_fragment_max_age_ns\":%d,\"remote_ordered_pending_frames\":%d," +
+                        "\"remote_ordered_oldest_age_ns\":%d,\"remote_ordered_released_frames\":%d," +
+                        "\"remote_ordered_max_wait_ns\":%d," +
+                        "\"remote_application_batch_supported\":%s," +
+                        "\"remote_application_batches\":%d,\"remote_application_batch_bytes\":%d," +
+                        "\"remote_application_batch_max_bytes\":%d," +
                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
@@ -552,7 +632,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
                 reliableFrameDuplicates, nacksDeferred, reorderedPackets, nackRetransmitBytes,
                 timeoutRetransmitBytes,
-                adaptivePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
+                fragmentPendingBuilders, fragmentPendingBytes, fragmentOldestAgeNanos, fragmentCompleted,
+                fragmentCompletedBytes, fragmentMaxAgeNanos, orderedPendingFrames, orderedOldestAgeNanos,
+                orderedReleasedFrames, orderedMaxWaitNanos,
+                applicationBatches, applicationBatchBytes, applicationBatchMaxBytes,
+                adaptivePacingRate, adaptiveBytePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
@@ -563,10 +647,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 fecDataShards, fecParityShards, fecRecoveryRatio,
                 isRemoteSupported(), remoteQueuedBytes(), remoteBurst(), remoteErrorRate(), remoteTX(), remoteRX(),
                 isRemoteAdaptiveSupported(), remoteRttNanos(), remoteRttStdDevNanos(),
-                remotePacingRate(), remoteDeliveryRate(), remoteLossRatio(), remoteLossType(), remoteCongestionMode(),
+                remotePacingRate(), remoteBytePacingRate(), remoteDeliveryRate(), remoteLossRatio(), remoteLossType(), remoteCongestionMode(),
                 remoteCongestionWindow(), remoteInFlight(), remoteBandwidth(), remoteReliableFrameDuplicates(),
                 isRemoteRecoverySupported(), remoteNacksDeferred(), remoteReorderedPackets(),
                 remoteNackRetransmitBytes(), remoteTimeoutRetransmitBytes(),
+                remoteFragmentPendingBuilders(), remoteFragmentPendingBytes(), remoteFragmentOldestAgeNanos(),
+                remoteFragmentCompleted(), remoteFragmentMaxAgeNanos(), remoteOrderedPendingFrames(),
+                remoteOrderedOldestAgeNanos(), remoteOrderedReleasedFrames(), remoteOrderedMaxWaitNanos(),
+                isRemoteApplicationBatchSupported(), remoteApplicationBatches(),
+                remoteApplicationBatchBytes(), remoteApplicationBatchMaxBytes(),
                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
@@ -593,6 +682,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private long remoteRttNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttNanos() : 0L; }
     private long remoteRttStdDevNanos() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttStdDevNanos() : 0L; }
     private double remotePacingRate() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getPacingRate() : 0D; }
+    private long remoteBytePacingRate() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteBytePacingSupported()
+            ? metricsSynchronizationHandler.getBytePacingRate() : 0L; }
     private long remoteDeliveryRate() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getDeliveryRate() : 0L; }
     private double remoteLossRatio() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getLossRatio() : 0D; }
     private String remoteLossType() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getLossType() : "UNAVAILABLE"; }
@@ -605,6 +697,25 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private long remoteReorderedPackets() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getReorderedPackets() : 0L; }
     private long remoteNackRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getNackRetransmitBytes() : 0L; }
     private long remoteTimeoutRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getTimeoutRetransmitBytes() : 0L; }
+    private int remoteFragmentPendingBuilders() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentPendingBuilders() : 0; }
+    private long remoteFragmentPendingBytes() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentPendingBytes() : 0L; }
+    private long remoteFragmentOldestAgeNanos() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentOldestAgeNanos() : 0L; }
+    private long remoteFragmentCompleted() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentCompleted() : 0L; }
+    private long remoteFragmentMaxAgeNanos() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentMaxAgeNanos() : 0L; }
+    private int remoteOrderedPendingFrames() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getOrderedPendingFrames() : 0; }
+    private long remoteOrderedOldestAgeNanos() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getOrderedOldestAgeNanos() : 0L; }
+    private long remoteOrderedReleasedFrames() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getOrderedReleasedFrames() : 0L; }
+    private long remoteOrderedMaxWaitNanos() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getOrderedMaxWaitNanos() : 0L; }
+    private boolean isRemoteHolSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteHolSupported(); }
+    private boolean isRemoteApplicationBatchSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteApplicationBatchSupported(); }
+    private long remoteApplicationBatches() { return isRemoteApplicationBatchSupported()
+            ? metricsSynchronizationHandler.getApplicationBatches() : 0L; }
+    private long remoteApplicationBatchBytes() { return isRemoteApplicationBatchSupported()
+            ? metricsSynchronizationHandler.getApplicationBatchBytes() : 0L; }
+    private long remoteApplicationBatchMaxBytes() { return isRemoteApplicationBatchSupported()
+            ? metricsSynchronizationHandler.getApplicationBatchMaxBytes() : 0L; }
     private String remoteCongestionReason() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionReason() : "UNAVAILABLE"; }
     private double remoteRttInflation() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttInflation() : 1D; }
     private boolean remotePacingCapped() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isPacingCapped(); }
