@@ -42,7 +42,7 @@ JVM properties are available on both client and server:
 -Draknetify.adaptiveMaxPps=2000
 -Draknetify.smallWriteCoalesceMicros=250
 -Draknetify.plpmtudMaxMtu=1500
--Draknetify.metricsJsonl=/path/to/raknetify-metrics.jsonl
+-Draknetify.metricsJsonl=true
 ```
 
 `adaptiveTransport` defaults to `true`; no JVM argument is required to enable it. Set the property
@@ -59,11 +59,12 @@ and queue congestion.
 socket. When enabled, the transport aggregates connection votes and uses a 2:1 majority plus a
 30-second cooldown before switching the shared socket between AF41 and CS0.
 
-`metricsJsonl` is optional and disabled when unset. When configured, each connection appends one
-JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
+`metricsJsonl` is a boolean switch and defaults to `false`. When enabled, each connection appends
+one JSON object per second containing RTT, packet/byte rates, queue depth, pacing and delivery rates,
 loss classification, congestion-control mode/cwnd/in-flight bytes, ACK aggregation, ECN feedback,
 active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and small-write batching.
-Use a separate output file per process. The file and missing parent directories are created during
+Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
+no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
 the recorder without affecting traffic. Records enter a bounded non-blocking queue and a daemon
 writer flushes them off the Netty event loop. `export_dropped` reports queue saturation, so slow

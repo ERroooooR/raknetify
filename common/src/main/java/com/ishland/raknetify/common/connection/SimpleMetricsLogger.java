@@ -454,13 +454,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public double getFecRecoveryRatio() { return fecRecoveryRatio; }
 
     private static Path metricsFile() {
-        final String value = System.getProperty("raknetify.metricsJsonl", "").trim();
-        if (value.isEmpty()) return null;
+        if (!Boolean.getBoolean("raknetify.metricsJsonl")) return null;
         try {
-            return Paths.get(value).toAbsolutePath().normalize();
+            return Paths.get("logs", "raknetify-metrics.jsonl").toAbsolutePath().normalize();
         } catch (RuntimeException e) {
             METRICS_FILE_DISABLED.set(true);
-            System.err.println("Raknetify: invalid metrics JSONL path '" + value + "': " + e);
+            System.err.println("Raknetify: failed to resolve the default metrics JSONL path: " + e);
             return null;
         }
     }
