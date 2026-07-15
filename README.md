@@ -70,11 +70,11 @@ transport queueing or a large compressed batch waiting for all RakNet fragments.
 still contains byte-pacing and adaptive ACK-policy fields for log compatibility, but those active
 experiments were rolled back after public-network testing showed directional feedback mismatch.
 They now report neutral values and do not alter packet scheduling. A sender-local burst drain floor
-activates only while its queued plus in-flight data exceeds 48 KiB, targets roughly two seconds of
-drain time and is capped at 300 packets per second. It exits below 16 KiB, remains subject to the
-congestion window, and scales down for measured loss and RTT inflation. This prevents chunk bursts
-from being trapped near the minimum pacing rate without restoring remote feedback or speculative
-bandwidth probes.
+activates only while its queued plus in-flight data exceeds 48 KiB, targets roughly 500 ms of
+drain time and never exceeds the configured 600 packet-per-second default ceiling. It exits below
+16 KiB, remains subject to the congestion window, and scales down for measured loss and RTT
+inflation. This prevents chunk bursts from being trapped near the minimum pacing rate without
+restoring remote feedback or speculative bandwidth probes.
 `backlog_state` reports `BULK` only while this floor is active; `backlog_probes` remains zero. The
 conservative normal ceiling remains 600 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
