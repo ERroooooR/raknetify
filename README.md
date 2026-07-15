@@ -77,6 +77,10 @@ loss permits only bounded growth up to 600 PPS, while active `RATE_LIMIT`, `QUEU
 signals disable the backlog floor entirely. After loss becomes quiet, recovery starts near 100 PPS
 and doubles every 500 ms up to 600 PPS before normal healthy control resumes. The floor exits below
 16 KiB and remains subject to the congestion window and RTT diagnostics.
+To avoid treating short carrier-path reordering as congestion, gaps of only one or two FrameSets
+receive an RTT/jitter-derived 4-25 ms NACK grace period. A packet arriving during that grace cancels
+the NACK and increments `reordered_packets`; gaps of three or more FrameSets bypass the grace and
+recover immediately. `nack_deferred` exposes how often this bounded filter is used.
 `backlog_state` reports `BULK` only while this floor is active; `backlog_probes` remains zero. The
 normal healthy ceiling defaults to 2000 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
