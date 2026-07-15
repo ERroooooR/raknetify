@@ -39,7 +39,7 @@ JVM properties are available on both client and server:
 -Draknetify.adaptiveDscp=false
 -Draknetify.protocolVersion=12
 -Draknetify.adaptiveMinPps=50
--Draknetify.adaptiveMaxPps=600
+-Draknetify.adaptiveMaxPps=2000
 -Draknetify.smallWriteCoalesceMicros=500
 -Draknetify.plpmtudMaxMtu=1452
 -Draknetify.metricsJsonl=true
@@ -70,13 +70,15 @@ transport queueing or a large compressed batch waiting for all RakNet fragments.
 still contains byte-pacing and adaptive ACK-policy fields for log compatibility, but those active
 experiments were rolled back after public-network testing showed directional feedback mismatch.
 They now report neutral values and do not alter packet scheduling. A sender-local burst drain floor
-activates only while its queued plus in-flight data exceeds 48 KiB, targets roughly 500 ms of
-drain time and never exceeds the configured 600 packet-per-second default ceiling. It exits below
-16 KiB, remains subject to the congestion window, and scales down for measured loss and RTT
-inflation. This prevents chunk bursts from being trapped near the minimum pacing rate without
-restoring remote feedback or speculative bandwidth probes.
+activates only while its queued plus in-flight data exceeds 48 KiB and targets roughly 500 ms of
+drain time. New connections remain capped at 600 PPS until an ACK history is established; healthy
+bursts then approach the configured 2000 packet-per-second default in steps of at most 2x. Isolated
+loss permits only bounded growth up to 600 PPS, while active `RATE_LIMIT`, `QUEUE` or MTU-black-hole
+signals disable the backlog floor entirely. After loss becomes quiet, recovery starts near 100 PPS
+and doubles every 500 ms up to 600 PPS before normal healthy control resumes. The floor exits below
+16 KiB and remains subject to the congestion window and RTT diagnostics.
 `backlog_state` reports `BULK` only while this floor is active; `backlog_probes` remains zero. The
-conservative normal ceiling remains 600 packets per second.
+normal healthy ceiling defaults to 2000 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
