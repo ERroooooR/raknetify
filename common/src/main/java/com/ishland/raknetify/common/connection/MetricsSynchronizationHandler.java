@@ -56,6 +56,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final int APPLICATION_BATCH_EXTENDED_SIZE = 24;
     private static final int ACK_POLICY_EXTENDED_SIZE = 33;
     private static final int DEMAND_EXTENDED_SIZE = 18;
+    private static final int NACK_OUTCOME_EXTENDED_SIZE = 16;
+    private static final int NACK_POLICY_EXTENDED_SIZE = 9;
+    private static final int NACK_REPEAT_EXTENDED_SIZE = 16;
+    private static final int FEC_EXTENDED_SIZE = 48;
+    private static final int ADVANCED_RECOVERY_EXTENDED_SIZE = 388;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -79,7 +84,9 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                        + ADAPTIVE_EXTENDED_SIZE + RECOVERY_EXTENDED_SIZE
                        + BYTE_PACING_EXTENDED_SIZE + HOL_EXTENDED_SIZE
                        + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE
-                       + DEMAND_EXTENDED_SIZE);
+                       + DEMAND_EXTENDED_SIZE + NACK_OUTCOME_EXTENDED_SIZE
+                       + NACK_POLICY_EXTENDED_SIZE + NACK_REPEAT_EXTENDED_SIZE
+                       + FEC_EXTENDED_SIZE + ADVANCED_RECOVERY_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -116,6 +123,15 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private boolean isRemoteRecoverySupported;
     private long nacksDeferred;
     private long reorderedPackets;
+    private long nacksDeferredExpired;
+    private long nacksDeferredConfirmed;
+    private boolean isRemoteNackOutcomeSupported;
+    private boolean isRemoteNackPolicySupported;
+    private long nackGraceBypassed;
+    private boolean nackGraceBypass;
+    private boolean isRemoteNackRepeatSupported;
+    private long nackRepeatedPackets;
+    private long nackRepeatedFrameSets;
     private long nackRetransmitBytes;
     private long timeoutRetransmitBytes;
     private boolean isRemoteBytePacingSupported;
@@ -145,6 +161,39 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private String backlogState = "IDLE";
     private long backlogAgeNanos;
     private long backlogProbes;
+    private boolean isRemoteFecSupported;
+    private long fecRecovered;
+    private long fecParityPackets;
+    private long fecParityBytes;
+    private long fecExpired;
+    private int fecDataShards;
+    private int fecParityShards;
+    private double fecRecoveryRatio;
+    private boolean isRemoteAdvancedRecoverySupported;
+    private long rackRetransmitBytes;
+    private long rackRetransmitFrameSets;
+    private long rackSpuriousAcks;
+    private long ptoProbes;
+    private long ptoProbeBytes;
+    private long ptoProbeAckedBytes;
+    private int ptoCount;
+    private long lastAckProgressAgeNanos;
+    private long applicationLimitedRecoveryPackets;
+    private long applicationLimitedRecoveryBytes;
+    private int recoveryQueueDepth;
+    private long recoveryQueueOldestAgeNanos;
+    private double recoveryDebt;
+    private int recoveryDebtChannel = -1;
+    private long targetedFecPackets;
+    private long targetedFecBytes;
+    private long targetedFecRecovered;
+    private int targetedFecChannel = -1;
+    private int orderedWorstChannel = -1;
+    private final int[] orderedChannelPending = new int[8];
+    private final long[] orderedChannelOldestAgeNanos = new long[8];
+    private final int[] orderedChannelBlockedOrderIndex = new int[8];
+    private final long[] orderedChannelReleasedFrames = new long[8];
+    private final long[] orderedChannelMaxWaitNanos = new long[8];
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -205,6 +254,15 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public boolean isRemoteRecoverySupported() { return isRemoteRecoverySupported; }
     public long getNacksDeferred() { return nacksDeferred; }
     public long getReorderedPackets() { return reorderedPackets; }
+    public boolean isRemoteNackOutcomeSupported() { return isRemoteNackOutcomeSupported; }
+    public long getNacksDeferredExpired() { return nacksDeferredExpired; }
+    public long getNacksDeferredConfirmed() { return nacksDeferredConfirmed; }
+    public boolean isRemoteNackPolicySupported() { return isRemoteNackPolicySupported; }
+    public long getNackGraceBypassed() { return nackGraceBypassed; }
+    public boolean isNackGraceBypass() { return nackGraceBypass; }
+    public boolean isRemoteNackRepeatSupported() { return isRemoteNackRepeatSupported; }
+    public long getNackRepeatedPackets() { return nackRepeatedPackets; }
+    public long getNackRepeatedFrameSets() { return nackRepeatedFrameSets; }
     public long getNackRetransmitBytes() { return nackRetransmitBytes; }
     public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
     public boolean isRemoteBytePacingSupported() { return isRemoteBytePacingSupported; }
@@ -234,6 +292,39 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public String getBacklogState() { return backlogState; }
     public long getBacklogAgeNanos() { return backlogAgeNanos; }
     public long getBacklogProbes() { return backlogProbes; }
+    public boolean isRemoteFecSupported() { return isRemoteFecSupported; }
+    public long getFecRecovered() { return fecRecovered; }
+    public long getFecParityPackets() { return fecParityPackets; }
+    public long getFecParityBytes() { return fecParityBytes; }
+    public long getFecExpired() { return fecExpired; }
+    public int getFecDataShards() { return fecDataShards; }
+    public int getFecParityShards() { return fecParityShards; }
+    public double getFecRecoveryRatio() { return fecRecoveryRatio; }
+    public boolean isRemoteAdvancedRecoverySupported() { return isRemoteAdvancedRecoverySupported; }
+    public long getRackRetransmitBytes() { return rackRetransmitBytes; }
+    public long getRackRetransmitFrameSets() { return rackRetransmitFrameSets; }
+    public long getRackSpuriousAcks() { return rackSpuriousAcks; }
+    public long getPtoProbes() { return ptoProbes; }
+    public long getPtoProbeBytes() { return ptoProbeBytes; }
+    public long getPtoProbeAckedBytes() { return ptoProbeAckedBytes; }
+    public int getPtoCount() { return ptoCount; }
+    public long getLastAckProgressAgeNanos() { return lastAckProgressAgeNanos; }
+    public long getApplicationLimitedRecoveryPackets() { return applicationLimitedRecoveryPackets; }
+    public long getApplicationLimitedRecoveryBytes() { return applicationLimitedRecoveryBytes; }
+    public int getRecoveryQueueDepth() { return recoveryQueueDepth; }
+    public long getRecoveryQueueOldestAgeNanos() { return recoveryQueueOldestAgeNanos; }
+    public double getRecoveryDebt() { return recoveryDebt; }
+    public int getRecoveryDebtChannel() { return recoveryDebtChannel; }
+    public long getTargetedFecPackets() { return targetedFecPackets; }
+    public long getTargetedFecBytes() { return targetedFecBytes; }
+    public long getTargetedFecRecovered() { return targetedFecRecovered; }
+    public int getTargetedFecChannel() { return targetedFecChannel; }
+    public int getOrderedWorstChannel() { return orderedWorstChannel; }
+    public int[] getOrderedChannelPending() { return java.util.Arrays.copyOf(orderedChannelPending, 8); }
+    public long[] getOrderedChannelOldestAgeNanos() { return java.util.Arrays.copyOf(orderedChannelOldestAgeNanos, 8); }
+    public int[] getOrderedChannelBlockedOrderIndex() { return java.util.Arrays.copyOf(orderedChannelBlockedOrderIndex, 8); }
+    public long[] getOrderedChannelReleasedFrames() { return java.util.Arrays.copyOf(orderedChannelReleasedFrames, 8); }
+    public long[] getOrderedChannelMaxWaitNanos() { return java.util.Arrays.copyOf(orderedChannelMaxWaitNanos, 8); }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -285,6 +376,48 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         buffer.writeByte(backlogStateCode(logger.getBacklogState()));
         buffer.writeLong(logger.getBacklogAgeNanos());
         buffer.writeLong(logger.getBacklogProbes());
+        buffer.writeLong(logger.getNacksDeferredExpired());
+        buffer.writeLong(logger.getNacksDeferredConfirmed());
+        buffer.writeLong(logger.getNackGraceBypassed());
+        buffer.writeByte(logger.isAdaptiveNackGraceBypass() ? 1 : 0);
+        buffer.writeLong(logger.getNackRepeatedPackets());
+        buffer.writeLong(logger.getNackRepeatedFrameSets());
+        buffer.writeLong(logger.getFecRecovered());
+        buffer.writeLong(logger.getFecParityPackets());
+        buffer.writeLong(logger.getFecParityBytes());
+        buffer.writeLong(logger.getFecExpired());
+        buffer.writeInt(logger.getFecDataShards());
+        buffer.writeInt(logger.getFecParityShards());
+        buffer.writeDouble(logger.getFecRecoveryRatio());
+        buffer.writeLong(logger.getRackRetransmitBytes());
+        buffer.writeLong(logger.getRackRetransmitFrameSets());
+        buffer.writeLong(logger.getRackSpuriousAcks());
+        buffer.writeLong(logger.getPtoProbes());
+        buffer.writeLong(logger.getPtoProbeBytes());
+        buffer.writeLong(logger.getPtoProbeAckedBytes());
+        buffer.writeInt(logger.getPtoCount());
+        buffer.writeLong(logger.getLastAckProgressAgeNanos());
+        buffer.writeLong(logger.getApplicationLimitedRecoveryPackets());
+        buffer.writeLong(logger.getApplicationLimitedRecoveryBytes());
+        buffer.writeInt(logger.getRecoveryQueueDepth());
+        buffer.writeLong(logger.getRecoveryQueueOldestAgeNanos());
+        buffer.writeDouble(logger.getRecoveryDebt());
+        buffer.writeInt(logger.getRecoveryDebtChannel());
+        buffer.writeLong(logger.getTargetedFecPackets());
+        buffer.writeLong(logger.getTargetedFecBytes());
+        buffer.writeLong(logger.getTargetedFecRecovered());
+        buffer.writeInt(logger.getTargetedFecChannel());
+        buffer.writeInt(logger.getOrderedWorstChannel());
+        final int[] channelPending = logger.getOrderedChannelPending();
+        final long[] channelOldest = logger.getOrderedChannelOldestAgeNanos();
+        final int[] channelBlocked = logger.getOrderedChannelBlockedOrderIndex();
+        final long[] channelReleased = logger.getOrderedChannelReleasedFrames();
+        final long[] channelMaxWait = logger.getOrderedChannelMaxWaitNanos();
+        for (int value : channelPending) buffer.writeInt(value);
+        for (long value : channelOldest) buffer.writeLong(value);
+        for (int value : channelBlocked) buffer.writeInt(value);
+        for (long value : channelReleased) buffer.writeLong(value);
+        for (long value : channelMaxWait) buffer.writeLong(value);
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -357,12 +490,64 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                                     this.backlogAgeNanos = byteBuf.readLong();
                                     this.backlogProbes = byteBuf.readLong();
                                     this.isRemoteDemandSupported = true;
+                                    if (byteBuf.readableBytes() >= NACK_OUTCOME_EXTENDED_SIZE) {
+                                        this.nacksDeferredExpired = byteBuf.readLong();
+                                        this.nacksDeferredConfirmed = byteBuf.readLong();
+                                        this.isRemoteNackOutcomeSupported = true;
+                                        if (byteBuf.readableBytes() >= NACK_POLICY_EXTENDED_SIZE) {
+                                            this.nackGraceBypassed = byteBuf.readLong();
+                                            this.nackGraceBypass = byteBuf.readUnsignedByte() != 0;
+                                            this.isRemoteNackPolicySupported = true;
+                                            if (byteBuf.readableBytes() >= NACK_REPEAT_EXTENDED_SIZE) {
+                                                this.nackRepeatedPackets = byteBuf.readLong();
+                                                this.nackRepeatedFrameSets = byteBuf.readLong();
+                                                this.isRemoteNackRepeatSupported = true;
+                                                if (byteBuf.readableBytes() >= FEC_EXTENDED_SIZE) {
+                                                    this.fecRecovered = byteBuf.readLong();
+                                                    this.fecParityPackets = byteBuf.readLong();
+                                                    this.fecParityBytes = byteBuf.readLong();
+                                                    this.fecExpired = byteBuf.readLong();
+                                                    this.fecDataShards = byteBuf.readInt();
+                                                    this.fecParityShards = byteBuf.readInt();
+                                                    this.fecRecoveryRatio = byteBuf.readDouble();
+                                                    this.isRemoteFecSupported = true;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+        if (this.isRemoteFecSupported && byteBuf.readableBytes() >= ADVANCED_RECOVERY_EXTENDED_SIZE) {
+            this.rackRetransmitBytes = byteBuf.readLong();
+            this.rackRetransmitFrameSets = byteBuf.readLong();
+            this.rackSpuriousAcks = byteBuf.readLong();
+            this.ptoProbes = byteBuf.readLong();
+            this.ptoProbeBytes = byteBuf.readLong();
+            this.ptoProbeAckedBytes = byteBuf.readLong();
+            this.ptoCount = byteBuf.readInt();
+            this.lastAckProgressAgeNanos = byteBuf.readLong();
+            this.applicationLimitedRecoveryPackets = byteBuf.readLong();
+            this.applicationLimitedRecoveryBytes = byteBuf.readLong();
+            this.recoveryQueueDepth = byteBuf.readInt();
+            this.recoveryQueueOldestAgeNanos = byteBuf.readLong();
+            this.recoveryDebt = byteBuf.readDouble();
+            this.recoveryDebtChannel = byteBuf.readInt();
+            this.targetedFecPackets = byteBuf.readLong();
+            this.targetedFecBytes = byteBuf.readLong();
+            this.targetedFecRecovered = byteBuf.readLong();
+            this.targetedFecChannel = byteBuf.readInt();
+            this.orderedWorstChannel = byteBuf.readInt();
+            for (int i = 0; i < 8; i++) this.orderedChannelPending[i] = byteBuf.readInt();
+            for (int i = 0; i < 8; i++) this.orderedChannelOldestAgeNanos[i] = byteBuf.readLong();
+            for (int i = 0; i < 8; i++) this.orderedChannelBlockedOrderIndex[i] = byteBuf.readInt();
+            for (int i = 0; i < 8; i++) this.orderedChannelReleasedFrames[i] = byteBuf.readLong();
+            for (int i = 0; i < 8; i++) this.orderedChannelMaxWaitNanos[i] = byteBuf.readLong();
+            this.isRemoteAdvancedRecoverySupported = true;
         }
         return true;
     }

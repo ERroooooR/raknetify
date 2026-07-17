@@ -34,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -53,8 +54,32 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long reliableFrameDuplicates = 0L;
     private volatile long nacksDeferred = 0L;
     private volatile long reorderedPackets = 0L;
+    private volatile long nacksDeferredExpired = 0L;
+    private volatile long nacksDeferredConfirmed = 0L;
+    private volatile long nackGraceBypassed = 0L;
+    private volatile boolean adaptiveNackGraceBypass;
+    private volatile long nackRepeatedPackets = 0L;
+    private volatile long nackRepeatedFrameSets = 0L;
     private volatile long nackRetransmitBytes = 0L;
     private volatile long timeoutRetransmitBytes = 0L;
+    private volatile long rackRetransmitBytes = 0L;
+    private volatile long rackRetransmitFrameSets = 0L;
+    private volatile long rackSpuriousAcks = 0L;
+    private volatile long ptoProbes = 0L;
+    private volatile long ptoProbeBytes = 0L;
+    private volatile long ptoProbeAckedBytes = 0L;
+    private volatile int ptoCount = 0;
+    private volatile long lastAckProgressAgeNanos = 0L;
+    private volatile long applicationLimitedRecoveryPackets = 0L;
+    private volatile long applicationLimitedRecoveryBytes = 0L;
+    private volatile int recoveryQueueDepth = 0;
+    private volatile long recoveryQueueOldestAgeNanos = 0L;
+    private volatile double recoveryDebt = 0D;
+    private volatile int recoveryDebtChannel = -1;
+    private volatile long targetedFecPackets = 0L;
+    private volatile long targetedFecBytes = 0L;
+    private volatile long targetedFecRecovered = 0L;
+    private volatile int targetedFecChannel = -1;
     private volatile int fragmentPendingBuilders = 0;
     private volatile long fragmentPendingBytes = 0L;
     private volatile long fragmentOldestAgeNanos = 0L;
@@ -65,6 +90,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long orderedOldestAgeNanos = 0L;
     private volatile long orderedReleasedFrames = 0L;
     private volatile long orderedMaxWaitNanos = 0L;
+    private final int[] orderedChannelPending = new int[8];
+    private final long[] orderedChannelOldestAgeNanos = new long[8];
+    private final int[] orderedChannelBlockedOrderIndex = new int[8];
+    private final long[] orderedChannelReleasedFrames = new long[8];
+    private final long[] orderedChannelMaxWaitNanos = new long[8];
+    private volatile int orderedWorstChannel = -1;
     private volatile long applicationBatches = 0L;
     private volatile long applicationBatchBytes = 0L;
     private volatile long applicationBatchMaxBytes = 0L;
@@ -136,6 +167,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private static final AtomicBoolean METRICS_WRITER_STARTED = new AtomicBoolean();
 
     public SimpleMetricsLogger() {
+        Arrays.fill(orderedChannelBlockedOrderIndex, -1);
         initializeMetricsExport();
     }
 
@@ -189,10 +221,80 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public void reorderedPacket(int delta) { reorderedPackets += delta; }
 
     @Override
+    public void nackDeferredExpired(int delta) { nacksDeferredExpired += delta; }
+
+    @Override
+    public void nackDeferredConfirmed(int delta) { nacksDeferredConfirmed += delta; }
+
+    @Override
+    public void nackGraceBypassed(int delta) { nackGraceBypassed += delta; }
+
+    @Override
+    public void adaptiveNackGrace(boolean bypassed) { adaptiveNackGraceBypass = bypassed; }
+
+    @Override
+    public void nackRepeated(int requestedFrameSets) {
+        nackRepeatedPackets++;
+        nackRepeatedFrameSets += requestedFrameSets;
+    }
+
+    @Override
     public void nackRetransmit(int bytes) { nackRetransmitBytes += bytes; }
 
     @Override
     public void timeoutRetransmit(int bytes) { timeoutRetransmitBytes += bytes; }
+
+    @Override
+    public void rackRetransmit(int bytes) {
+        rackRetransmitBytes += bytes;
+        rackRetransmitFrameSets++;
+    }
+
+    @Override
+    public void rackSpuriousAck(int delta) { rackSpuriousAcks += delta; }
+
+    @Override
+    public void ptoProbe(int bytes) {
+        ptoProbes++;
+        ptoProbeBytes += bytes;
+    }
+
+    @Override
+    public void ptoProbeAcked(int bytes) { ptoProbeAckedBytes += bytes; }
+
+    @Override
+    public void ptoState(int count, long lastAckProgressAgeNanos) {
+        ptoCount = count;
+        this.lastAckProgressAgeNanos = lastAckProgressAgeNanos;
+    }
+
+    @Override
+    public void applicationLimitedRecovery(int bytes) {
+        applicationLimitedRecoveryPackets++;
+        applicationLimitedRecoveryBytes += bytes;
+    }
+
+    @Override
+    public void recoveryQueueState(int depth, long oldestAgeNanos) {
+        recoveryQueueDepth = depth;
+        recoveryQueueOldestAgeNanos = oldestAgeNanos;
+    }
+
+    @Override
+    public void recoveryDebt(double debt, int channel) {
+        recoveryDebt = debt;
+        recoveryDebtChannel = channel;
+    }
+
+    @Override
+    public void targetedFecRepair(int channel, int bytes) {
+        targetedFecPackets++;
+        targetedFecBytes += bytes;
+        targetedFecChannel = channel;
+    }
+
+    @Override
+    public void targetedFecRecovered(int packets) { targetedFecRecovered += packets; }
 
     @Override
     public void fragmentReassemblyPending(int builders, long bytes, long oldestAgeNanos) {
@@ -218,6 +320,32 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public void orderedQueueRelease(int frames, long oldestWaitNanos) {
         orderedReleasedFrames += frames;
         orderedMaxWaitNanos = Math.max(orderedMaxWaitNanos, oldestWaitNanos);
+    }
+
+    @Override
+    public void orderedChannelPending(int channel, int frames, long oldestAgeNanos,
+                                      int blockedOrderIndex) {
+        if (channel < 0 || channel >= orderedChannelPending.length) return;
+        orderedChannelPending[channel] = frames;
+        orderedChannelOldestAgeNanos[channel] = oldestAgeNanos;
+        orderedChannelBlockedOrderIndex[channel] = blockedOrderIndex;
+        int worst = -1;
+        long worstAge = -1L;
+        for (int i = 0; i < orderedChannelPending.length; i++) {
+            if (orderedChannelPending[i] > 0 && orderedChannelOldestAgeNanos[i] > worstAge) {
+                worst = i;
+                worstAge = orderedChannelOldestAgeNanos[i];
+            }
+        }
+        orderedWorstChannel = worst;
+    }
+
+    @Override
+    public void orderedChannelRelease(int channel, int frames, long oldestWaitNanos) {
+        if (channel < 0 || channel >= orderedChannelPending.length) return;
+        orderedChannelReleasedFrames[channel] += frames;
+        orderedChannelMaxWaitNanos[channel] = Math.max(
+                orderedChannelMaxWaitNanos[channel], oldestWaitNanos);
     }
 
     @Override
@@ -573,8 +701,32 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getReliableFrameDuplicates() { return reliableFrameDuplicates; }
     public long getNacksDeferred() { return nacksDeferred; }
     public long getReorderedPackets() { return reorderedPackets; }
+    public long getNacksDeferredExpired() { return nacksDeferredExpired; }
+    public long getNacksDeferredConfirmed() { return nacksDeferredConfirmed; }
+    public long getNackGraceBypassed() { return nackGraceBypassed; }
+    public boolean isAdaptiveNackGraceBypass() { return adaptiveNackGraceBypass; }
+    public long getNackRepeatedPackets() { return nackRepeatedPackets; }
+    public long getNackRepeatedFrameSets() { return nackRepeatedFrameSets; }
     public long getNackRetransmitBytes() { return nackRetransmitBytes; }
     public long getTimeoutRetransmitBytes() { return timeoutRetransmitBytes; }
+    public long getRackRetransmitBytes() { return rackRetransmitBytes; }
+    public long getRackRetransmitFrameSets() { return rackRetransmitFrameSets; }
+    public long getRackSpuriousAcks() { return rackSpuriousAcks; }
+    public long getPtoProbes() { return ptoProbes; }
+    public long getPtoProbeBytes() { return ptoProbeBytes; }
+    public long getPtoProbeAckedBytes() { return ptoProbeAckedBytes; }
+    public int getPtoCount() { return ptoCount; }
+    public long getLastAckProgressAgeNanos() { return lastAckProgressAgeNanos; }
+    public long getApplicationLimitedRecoveryPackets() { return applicationLimitedRecoveryPackets; }
+    public long getApplicationLimitedRecoveryBytes() { return applicationLimitedRecoveryBytes; }
+    public int getRecoveryQueueDepth() { return recoveryQueueDepth; }
+    public long getRecoveryQueueOldestAgeNanos() { return recoveryQueueOldestAgeNanos; }
+    public double getRecoveryDebt() { return recoveryDebt; }
+    public int getRecoveryDebtChannel() { return recoveryDebtChannel; }
+    public long getTargetedFecPackets() { return targetedFecPackets; }
+    public long getTargetedFecBytes() { return targetedFecBytes; }
+    public long getTargetedFecRecovered() { return targetedFecRecovered; }
+    public int getTargetedFecChannel() { return targetedFecChannel; }
     public int getFragmentPendingBuilders() { return fragmentPendingBuilders; }
     public long getFragmentPendingBytes() { return fragmentPendingBytes; }
     public long getFragmentOldestAgeNanos() { return fragmentOldestAgeNanos; }
@@ -585,6 +737,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getOrderedOldestAgeNanos() { return orderedOldestAgeNanos; }
     public long getOrderedReleasedFrames() { return orderedReleasedFrames; }
     public long getOrderedMaxWaitNanos() { return orderedMaxWaitNanos; }
+    public int getOrderedWorstChannel() { return orderedWorstChannel; }
+    public int[] getOrderedChannelPending() { return Arrays.copyOf(orderedChannelPending, 8); }
+    public long[] getOrderedChannelOldestAgeNanos() { return Arrays.copyOf(orderedChannelOldestAgeNanos, 8); }
+    public int[] getOrderedChannelBlockedOrderIndex() { return Arrays.copyOf(orderedChannelBlockedOrderIndex, 8); }
+    public long[] getOrderedChannelReleasedFrames() { return Arrays.copyOf(orderedChannelReleasedFrames, 8); }
+    public long[] getOrderedChannelMaxWaitNanos() { return Arrays.copyOf(orderedChannelMaxWaitNanos, 8); }
     public long getApplicationBatches() { return applicationBatches; }
     public long getApplicationBatchBytes() { return applicationBatchBytes; }
     public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
@@ -625,13 +783,30 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
                         "\"reliable_frame_duplicates\":%d,\"nack_deferred\":%d," +
-                        "\"reordered_packets\":%d,\"nack_retransmit_bytes\":%d," +
-                        "\"timeout_retransmit_bytes\":%d," +
+                        "\"reordered_packets\":%d,\"nack_deferred_expired\":%d," +
+                        "\"nack_deferred_confirmed\":%d,\"nack_grace_bypassed\":%d," +
+                        "\"nack_grace_bypass\":%s,\"nack_repeated_packets\":%d," +
+                        "\"nack_repeated_framesets\":%d,\"nack_retransmit_bytes\":%d," +
+                        "\"timeout_retransmit_bytes\":%d,\"rack_retransmit_bytes\":%d," +
+                        "\"rack_retransmit_framesets\":%d,\"rack_spurious_acks\":%d," +
+                        "\"pto_probes\":%d,\"pto_probe_bytes\":%d,\"pto_probe_acked_bytes\":%d," +
+                        "\"pto_count\":%d,\"last_ack_progress_age_ns\":%d," +
+                        "\"application_limited_recovery_packets\":%d," +
+                        "\"application_limited_recovery_bytes\":%d," +
+                        "\"recovery_queue_depth\":%d,\"recovery_queue_oldest_age_ns\":%d," +
+                        "\"recovery_debt\":%.6f,\"recovery_debt_channel\":%d," +
+                        "\"targeted_fec_packets\":%d,\"targeted_fec_bytes\":%d," +
+                        "\"targeted_fec_recovered\":%d,\"targeted_fec_channel\":%d," +
                         "\"fragment_pending_builders\":%d,\"fragment_pending_bytes\":%d," +
                         "\"fragment_oldest_age_ns\":%d,\"fragment_completed\":%d," +
                         "\"fragment_completed_bytes\":%d,\"fragment_max_age_ns\":%d," +
                         "\"ordered_pending_frames\":%d,\"ordered_oldest_age_ns\":%d," +
                         "\"ordered_released_frames\":%d,\"ordered_max_wait_ns\":%d," +
+                        "\"ordered_worst_channel\":%d,\"ordered_channel_pending\":%s," +
+                        "\"ordered_channel_oldest_age_ns\":%s," +
+                        "\"ordered_channel_blocked_order_index\":%s," +
+                        "\"ordered_channel_released_frames\":%s," +
+                        "\"ordered_channel_max_wait_ns\":%s," +
                         "\"application_batches\":%d,\"application_batch_bytes\":%d," +
                         "\"application_batch_max_bytes\":%d," +
                         "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
@@ -659,6 +834,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_cwnd_bytes\":%d,\"remote_inflight_bytes\":%d,\"remote_bandwidth_bps\":%d," +
                         "\"remote_reliable_frame_duplicates\":%d,\"remote_recovery_supported\":%s," +
                         "\"remote_nack_deferred\":%d,\"remote_reordered_packets\":%d," +
+                        "\"remote_nack_outcome_supported\":%s," +
+                        "\"remote_nack_deferred_expired\":%d,\"remote_nack_deferred_confirmed\":%d," +
+                        "\"remote_nack_policy_supported\":%s,\"remote_nack_grace_bypassed\":%d," +
+                        "\"remote_nack_grace_bypass\":%s,\"remote_nack_repeat_supported\":%s," +
+                        "\"remote_nack_repeated_packets\":%d,\"remote_nack_repeated_framesets\":%d," +
                         "\"remote_nack_retransmit_bytes\":%d,\"remote_timeout_retransmit_bytes\":%d," +
                         "\"remote_fragment_pending_builders\":%d,\"remote_fragment_pending_bytes\":%d," +
                         "\"remote_fragment_oldest_age_ns\":%d,\"remote_fragment_completed\":%d," +
@@ -675,17 +855,51 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_demand_supported\":%s,\"remote_application_limited\":%s," +
                         "\"remote_backlog_state\":\"%s\",\"remote_backlog_age_ns\":%d," +
                         "\"remote_backlog_probes\":%d," +
+                        "\"remote_fec_supported\":%s,\"remote_fec_recovered\":%d," +
+                        "\"remote_fec_parity_packets\":%d,\"remote_fec_parity_bytes\":%d," +
+                        "\"remote_fec_expired\":%d,\"remote_fec_data_shards\":%d," +
+                        "\"remote_fec_parity_shards\":%d,\"remote_fec_recovery_ratio\":%.6f," +
+                        "\"remote_advanced_recovery_supported\":%s," +
+                        "\"remote_rack_retransmit_bytes\":%d," +
+                        "\"remote_rack_retransmit_framesets\":%d,\"remote_rack_spurious_acks\":%d," +
+                        "\"remote_pto_probes\":%d,\"remote_pto_probe_bytes\":%d," +
+                        "\"remote_pto_probe_acked_bytes\":%d,\"remote_pto_count\":%d," +
+                        "\"remote_last_ack_progress_age_ns\":%d," +
+                        "\"remote_application_limited_recovery_packets\":%d," +
+                        "\"remote_application_limited_recovery_bytes\":%d," +
+                        "\"remote_recovery_queue_depth\":%d," +
+                        "\"remote_recovery_queue_oldest_age_ns\":%d," +
+                        "\"remote_recovery_debt\":%.6f,\"remote_recovery_debt_channel\":%d," +
+                        "\"remote_targeted_fec_packets\":%d,\"remote_targeted_fec_bytes\":%d," +
+                        "\"remote_targeted_fec_recovered\":%d," +
+                        "\"remote_targeted_fec_channel\":%d,\"remote_ordered_worst_channel\":%d," +
+                        "\"remote_ordered_channel_pending\":%s," +
+                        "\"remote_ordered_channel_oldest_age_ns\":%s," +
+                        "\"remote_ordered_channel_blocked_order_index\":%s," +
+                        "\"remote_ordered_channel_released_frames\":%s," +
+                        "\"remote_ordered_channel_max_wait_ns\":%s," +
                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
                         "\"export_dropped\":%d}%n",
                 timestamp, System.identityHashCode(this), measureRTTns, measureRTTnsStdDev,
                 measureRX, measureTX, measureBytesInRate, measureBytesOutRate, currentQueuedBytes,
-                reliableFrameDuplicates, nacksDeferred, reorderedPackets, nackRetransmitBytes,
-                timeoutRetransmitBytes,
+                reliableFrameDuplicates, nacksDeferred, reorderedPackets,
+                nacksDeferredExpired, nacksDeferredConfirmed, nackGraceBypassed,
+                adaptiveNackGraceBypass, nackRepeatedPackets, nackRepeatedFrameSets, nackRetransmitBytes,
+                timeoutRetransmitBytes, rackRetransmitBytes, rackRetransmitFrameSets, rackSpuriousAcks,
+                ptoProbes, ptoProbeBytes, ptoProbeAckedBytes, ptoCount, lastAckProgressAgeNanos,
+                applicationLimitedRecoveryPackets, applicationLimitedRecoveryBytes,
+                recoveryQueueDepth, recoveryQueueOldestAgeNanos,
+                recoveryDebt, recoveryDebtChannel, targetedFecPackets, targetedFecBytes,
+                targetedFecRecovered, targetedFecChannel,
                 fragmentPendingBuilders, fragmentPendingBytes, fragmentOldestAgeNanos, fragmentCompleted,
                 fragmentCompletedBytes, fragmentMaxAgeNanos, orderedPendingFrames, orderedOldestAgeNanos,
                 orderedReleasedFrames, orderedMaxWaitNanos,
+                orderedWorstChannel, Arrays.toString(orderedChannelPending),
+                Arrays.toString(orderedChannelOldestAgeNanos),
+                Arrays.toString(orderedChannelBlockedOrderIndex),
+                Arrays.toString(orderedChannelReleasedFrames), Arrays.toString(orderedChannelMaxWaitNanos),
                 applicationBatches, applicationBatchBytes, applicationBatchMaxBytes,
                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
@@ -704,6 +918,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 remotePacingRate(), remoteBytePacingRate(), remoteDeliveryRate(), remoteLossRatio(), remoteLossType(), remoteCongestionMode(),
                 remoteCongestionWindow(), remoteInFlight(), remoteBandwidth(), remoteReliableFrameDuplicates(),
                 isRemoteRecoverySupported(), remoteNacksDeferred(), remoteReorderedPackets(),
+                isRemoteNackOutcomeSupported(), remoteNacksDeferredExpired(), remoteNacksDeferredConfirmed(),
+                isRemoteNackPolicySupported(), remoteNackGraceBypassed(), remoteNackGraceBypass(),
+                isRemoteNackRepeatSupported(), remoteNackRepeatedPackets(), remoteNackRepeatedFrameSets(),
                 remoteNackRetransmitBytes(), remoteTimeoutRetransmitBytes(),
                 remoteFragmentPendingBuilders(), remoteFragmentPendingBytes(), remoteFragmentOldestAgeNanos(),
                 remoteFragmentCompleted(), remoteFragmentMaxAgeNanos(), remoteOrderedPendingFrames(),
@@ -714,6 +931,22 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 remoteAckProtection(), remoteAckFlushDelayNanos(), remoteAckRepeatDelayNanos(),
                 isRemoteDemandSupported(), remoteApplicationLimited(), remoteBacklogState(),
                 remoteBacklogAgeNanos(), remoteBacklogProbes(),
+                isRemoteFecSupported(), remoteFecRecovered(), remoteFecParityPackets(),
+                remoteFecParityBytes(), remoteFecExpired(), remoteFecDataShards(),
+                remoteFecParityShards(), remoteFecRecoveryRatio(),
+                isRemoteAdvancedRecoverySupported(), remoteRackRetransmitBytes(),
+                remoteRackRetransmitFrameSets(), remoteRackSpuriousAcks(),
+                remotePtoProbes(), remotePtoProbeBytes(), remotePtoProbeAckedBytes(), remotePtoCount(),
+                remoteLastAckProgressAgeNanos(), remoteApplicationLimitedRecoveryPackets(),
+                remoteApplicationLimitedRecoveryBytes(), remoteRecoveryQueueDepth(),
+                remoteRecoveryQueueOldestAgeNanos(), remoteRecoveryDebt(), remoteRecoveryDebtChannel(),
+                remoteTargetedFecPackets(), remoteTargetedFecBytes(), remoteTargetedFecRecovered(),
+                remoteTargetedFecChannel(),
+                remoteOrderedWorstChannel(), Arrays.toString(remoteOrderedChannelPending()),
+                Arrays.toString(remoteOrderedChannelOldestAgeNanos()),
+                Arrays.toString(remoteOrderedChannelBlockedOrderIndex()),
+                Arrays.toString(remoteOrderedChannelReleasedFrames()),
+                Arrays.toString(remoteOrderedChannelMaxWaitNanos()),
                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
@@ -753,6 +986,24 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private long remoteReliableFrameDuplicates() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getReliableFrameDuplicates() : 0L; }
     private long remoteNacksDeferred() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getNacksDeferred() : 0L; }
     private long remoteReorderedPackets() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getReorderedPackets() : 0L; }
+    private boolean isRemoteNackOutcomeSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteNackOutcomeSupported(); }
+    private long remoteNacksDeferredExpired() { return isRemoteNackOutcomeSupported()
+            ? metricsSynchronizationHandler.getNacksDeferredExpired() : 0L; }
+    private long remoteNacksDeferredConfirmed() { return isRemoteNackOutcomeSupported()
+            ? metricsSynchronizationHandler.getNacksDeferredConfirmed() : 0L; }
+    private boolean isRemoteNackPolicySupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteNackPolicySupported(); }
+    private long remoteNackGraceBypassed() { return isRemoteNackPolicySupported()
+            ? metricsSynchronizationHandler.getNackGraceBypassed() : 0L; }
+    private boolean remoteNackGraceBypass() { return isRemoteNackPolicySupported()
+            && metricsSynchronizationHandler.isNackGraceBypass(); }
+    private boolean isRemoteNackRepeatSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteNackRepeatSupported(); }
+    private long remoteNackRepeatedPackets() { return isRemoteNackRepeatSupported()
+            ? metricsSynchronizationHandler.getNackRepeatedPackets() : 0L; }
+    private long remoteNackRepeatedFrameSets() { return isRemoteNackRepeatSupported()
+            ? metricsSynchronizationHandler.getNackRepeatedFrameSets() : 0L; }
     private long remoteNackRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getNackRetransmitBytes() : 0L; }
     private long remoteTimeoutRetransmitBytes() { return isRemoteRecoverySupported() ? metricsSynchronizationHandler.getTimeoutRetransmitBytes() : 0L; }
     private int remoteFragmentPendingBuilders() { return isRemoteHolSupported() ? metricsSynchronizationHandler.getFragmentPendingBuilders() : 0; }
@@ -796,6 +1047,72 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             ? metricsSynchronizationHandler.getBacklogAgeNanos() : 0L; }
     private long remoteBacklogProbes() { return isRemoteDemandSupported()
             ? metricsSynchronizationHandler.getBacklogProbes() : 0L; }
+    private boolean isRemoteFecSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteFecSupported(); }
+    private long remoteFecRecovered() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecRecovered() : 0L; }
+    private long remoteFecParityPackets() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecParityPackets() : 0L; }
+    private long remoteFecParityBytes() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecParityBytes() : 0L; }
+    private long remoteFecExpired() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecExpired() : 0L; }
+    private int remoteFecDataShards() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecDataShards() : 0; }
+    private int remoteFecParityShards() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecParityShards() : 0; }
+    private double remoteFecRecoveryRatio() { return isRemoteFecSupported()
+            ? metricsSynchronizationHandler.getFecRecoveryRatio() : 0D; }
+    private boolean isRemoteAdvancedRecoverySupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteAdvancedRecoverySupported(); }
+    private long remoteRackRetransmitBytes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRackRetransmitBytes() : 0L; }
+    private long remoteRackRetransmitFrameSets() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRackRetransmitFrameSets() : 0L; }
+    private long remoteRackSpuriousAcks() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRackSpuriousAcks() : 0L; }
+    private long remotePtoProbes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getPtoProbes() : 0L; }
+    private long remotePtoProbeBytes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getPtoProbeBytes() : 0L; }
+    private long remotePtoProbeAckedBytes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getPtoProbeAckedBytes() : 0L; }
+    private int remotePtoCount() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getPtoCount() : 0; }
+    private long remoteLastAckProgressAgeNanos() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getLastAckProgressAgeNanos() : 0L; }
+    private long remoteApplicationLimitedRecoveryPackets() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getApplicationLimitedRecoveryPackets() : 0L; }
+    private long remoteApplicationLimitedRecoveryBytes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getApplicationLimitedRecoveryBytes() : 0L; }
+    private int remoteRecoveryQueueDepth() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRecoveryQueueDepth() : 0; }
+    private long remoteRecoveryQueueOldestAgeNanos() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRecoveryQueueOldestAgeNanos() : 0L; }
+    private double remoteRecoveryDebt() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRecoveryDebt() : 0D; }
+    private int remoteRecoveryDebtChannel() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getRecoveryDebtChannel() : -1; }
+    private long remoteTargetedFecPackets() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getTargetedFecPackets() : 0L; }
+    private long remoteTargetedFecBytes() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getTargetedFecBytes() : 0L; }
+    private long remoteTargetedFecRecovered() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getTargetedFecRecovered() : 0L; }
+    private int remoteTargetedFecChannel() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getTargetedFecChannel() : -1; }
+    private int remoteOrderedWorstChannel() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedWorstChannel() : -1; }
+    private int[] remoteOrderedChannelPending() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedChannelPending() : new int[8]; }
+    private long[] remoteOrderedChannelOldestAgeNanos() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedChannelOldestAgeNanos() : new long[8]; }
+    private int[] remoteOrderedChannelBlockedOrderIndex() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedChannelBlockedOrderIndex() : new int[8]; }
+    private long[] remoteOrderedChannelReleasedFrames() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedChannelReleasedFrames() : new long[8]; }
+    private long[] remoteOrderedChannelMaxWaitNanos() { return isRemoteAdvancedRecoverySupported()
+            ? metricsSynchronizationHandler.getOrderedChannelMaxWaitNanos() : new long[8]; }
     private String remoteCongestionReason() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getCongestionReason() : "UNAVAILABLE"; }
     private double remoteRttInflation() { return isRemoteAdaptiveSupported() ? metricsSynchronizationHandler.getRttInflation() : 1D; }
     private boolean remotePacingCapped() { return isRemoteAdaptiveSupported() && metricsSynchronizationHandler.isPacingCapped(); }

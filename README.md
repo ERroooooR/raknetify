@@ -67,9 +67,11 @@ active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and
 It also records fragment-reassembly and ordered-queue head-of-line delay, plus actual
 external-compressor batch sizes. These fields distinguish a harmless per-tick display peak from
 transport queueing or a large compressed batch waiting for all RakNet fragments. The JSON schema
-still contains byte-pacing and adaptive ACK-policy fields for log compatibility, but those active
-experiments were rolled back after public-network testing showed directional feedback mismatch.
-They now report neutral values and do not alter packet scheduling. A sender-local burst drain floor
+also records byte-pacing and adaptive ACK/NACK recovery policy state. ACK protection remains off
+during healthy traffic. Three duplicate reliable FrameSets within one second activate it for at
+least two seconds;
+ACK ranges are then coalesced and repeated once after an RTT-derived 5-20 ms delay. This protects
+the feedback direction without permanently doubling ACK traffic. A sender-local burst drain floor
 activates only while its queued plus in-flight data exceeds 48 KiB and targets roughly 500 ms of
 drain time. New connections remain capped at 600 PPS until an ACK history is established; healthy
 bursts then approach the configured 2000 packet-per-second default in steps of at most 2x. Isolated
@@ -80,7 +82,20 @@ and doubles every 500 ms up to 600 PPS before normal healthy control resumes. Th
 To avoid treating short carrier-path reordering as congestion, gaps of only one or two FrameSets
 receive an RTT/jitter-derived 4-25 ms NACK grace period. A packet arriving during that grace cancels
 the NACK and increments `reordered_packets`; gaps of three or more FrameSets bypass the grace and
-recover immediately. `nack_deferred` exposes how often this bounded filter is used.
+recover immediately. The receiver evaluates the last 8-32 grace outcomes. When at least 88% are
+confirmed losses rather than reordering, it temporarily bypasses the grace and sends NACKs
+immediately. After at least two seconds it permits one deferred probe; a true reordered arrival
+restores the grace, while another confirmed loss resumes the bypass. `nack_deferred`,
+`nack_deferred_expired`, `nack_grace_bypassed` and `nack_grace_bypass` expose this decision.
+While either ACK protection or the NACK-grace bypass is active, NACK ranges are also coalesced and
+repeated once after an RTT-derived 5-20 ms delay. A missing FrameSet that arrives before the repeat
+is removed from the pending range. `nack_repeated_packets` and `nack_repeated_framesets` report the
+small amount of added control traffic; remote copies of these counters are synchronized as well.
+The adaptive policies can be disabled independently for comparison with
+`-Draknetify.adaptiveNackGrace=false`, `-Draknetify.adaptiveNackProtection=false` or
+`-Draknetify.adaptiveAckProtection=false`. FEC packet, byte, recovery, expiry, shard-budget and
+recovery-ratio metrics are synchronized in both directions so sender effectiveness is not inferred
+from receiver-local counters.
 `backlog_state` reports `BULK` only while this floor is active; `backlog_probes` remains zero. The
 normal healthy ceiling defaults to 2000 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;

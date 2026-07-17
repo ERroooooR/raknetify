@@ -47,6 +47,11 @@ class MetricsSynchronizationHandlerTest {
         sender.reliableFrameDuplicate(7);
         sender.nackDeferred(11);
         sender.reorderedPacket(5);
+        sender.nackDeferredExpired(4);
+        sender.nackDeferredConfirmed(2);
+        sender.nackGraceBypassed(13);
+        sender.adaptiveNackGrace(true);
+        sender.nackRepeated(5);
         sender.nackRetransmit(4096);
         sender.timeoutRetransmit(1024);
         sender.fragmentReassemblyPending(2, 65536L, 20_000_000L);
@@ -58,12 +63,28 @@ class MetricsSynchronizationHandlerTest {
         sender.ackRepeated(3);
         sender.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
         sender.adaptiveDemand(false, "BULK", 150_000_000L, 4L);
+        sender.fecRecovered(3);
+        sender.fecParity(7, 8192);
+        sender.fecExpired(2);
+        sender.fecBudget(10, 1, 0.25D);
         sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
+        sender.rackRetransmit(2048);
+        sender.rackSpuriousAck(2);
+        sender.ptoProbe(512);
+        sender.ptoProbeAcked(512);
+        sender.ptoState(1, 90_000_000L);
+        sender.applicationLimitedRecovery(384);
+        sender.recoveryQueueState(2, 100_000_000L);
+        sender.recoveryDebt(2.5D, 3);
+        sender.targetedFecRepair(3, 400);
+        sender.targetedFecRecovered(1);
+        sender.orderedChannelPending(3, 4, 110_000_000L, 27);
+        sender.orderedChannelRelease(3, 5, 120_000_000L);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(296, payload.readableBytes());
+            assertEquals(773, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -78,6 +99,15 @@ class MetricsSynchronizationHandlerTest {
             assertTrue(receiver.isRemoteRecoverySupported());
             assertEquals(11L, receiver.getNacksDeferred());
             assertEquals(5L, receiver.getReorderedPackets());
+            assertTrue(receiver.isRemoteNackOutcomeSupported());
+            assertEquals(4L, receiver.getNacksDeferredExpired());
+            assertEquals(2L, receiver.getNacksDeferredConfirmed());
+            assertTrue(receiver.isRemoteNackPolicySupported());
+            assertEquals(13L, receiver.getNackGraceBypassed());
+            assertTrue(receiver.isNackGraceBypass());
+            assertTrue(receiver.isRemoteNackRepeatSupported());
+            assertEquals(1L, receiver.getNackRepeatedPackets());
+            assertEquals(5L, receiver.getNackRepeatedFrameSets());
             assertEquals(4096L, receiver.getNackRetransmitBytes());
             assertEquals(1024L, receiver.getTimeoutRetransmitBytes());
             assertTrue(receiver.isRemoteBytePacingSupported());
@@ -107,8 +137,55 @@ class MetricsSynchronizationHandlerTest {
             assertEquals("BULK", receiver.getBacklogState());
             assertEquals(150_000_000L, receiver.getBacklogAgeNanos());
             assertEquals(4L, receiver.getBacklogProbes());
+            assertTrue(receiver.isRemoteFecSupported());
+            assertEquals(3L, receiver.getFecRecovered());
+            assertEquals(7L, receiver.getFecParityPackets());
+            assertEquals(8192L, receiver.getFecParityBytes());
+            assertEquals(2L, receiver.getFecExpired());
+            assertEquals(10, receiver.getFecDataShards());
+            assertEquals(1, receiver.getFecParityShards());
+            assertEquals(0.25D, receiver.getFecRecoveryRatio());
             assertTrue(receiver.isPacingCapped());
             assertTrue(receiver.isBandwidthProbeSuppressed());
+            assertTrue(receiver.isRemoteAdvancedRecoverySupported());
+            assertEquals(2048L, receiver.getRackRetransmitBytes());
+            assertEquals(1L, receiver.getRackRetransmitFrameSets());
+            assertEquals(2L, receiver.getRackSpuriousAcks());
+            assertEquals(1L, receiver.getPtoProbes());
+            assertEquals(512L, receiver.getPtoProbeBytes());
+            assertEquals(512L, receiver.getPtoProbeAckedBytes());
+            assertEquals(1, receiver.getPtoCount());
+            assertEquals(1L, receiver.getApplicationLimitedRecoveryPackets());
+            assertEquals(384L, receiver.getApplicationLimitedRecoveryBytes());
+            assertEquals(2, receiver.getRecoveryQueueDepth());
+            assertEquals(2.5D, receiver.getRecoveryDebt());
+            assertEquals(3, receiver.getRecoveryDebtChannel());
+            assertEquals(1L, receiver.getTargetedFecPackets());
+            assertEquals(400L, receiver.getTargetedFecBytes());
+            assertEquals(1L, receiver.getTargetedFecRecovered());
+            assertEquals(3, receiver.getOrderedWorstChannel());
+            assertEquals(4, receiver.getOrderedChannelPending()[3]);
+            assertEquals(27, receiver.getOrderedChannelBlockedOrderIndex()[3]);
+            assertEquals(5L, receiver.getOrderedChannelReleasedFrames()[3]);
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousFecExtensionRemainsReadableWithoutAdvancedRecoveryTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.fecRecovered(3);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(385);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteFecSupported());
+            assertEquals(3L, receiver.getFecRecovered());
+            assertFalse(receiver.isRemoteAdvancedRecoverySupported());
         } finally {
             payload.release();
         }
@@ -127,6 +204,25 @@ class MetricsSynchronizationHandlerTest {
             assertTrue(receiver.readPayload(payload));
             assertTrue(receiver.isRemoteAckPolicySupported());
             assertFalse(receiver.isRemoteDemandSupported());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousNackPolicyExtensionRemainsReadableWithoutNackRepeatAndFecTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.nackGraceBypassed(2);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(321);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteNackPolicySupported());
+            assertFalse(receiver.isRemoteNackRepeatSupported());
+            assertFalse(receiver.isRemoteFecSupported());
         } finally {
             payload.release();
         }
