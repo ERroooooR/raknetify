@@ -32,6 +32,7 @@ import io.netty.util.concurrent.ScheduledFuture;
 import network.ycc.raknet.RakNet;
 import network.ycc.raknet.frame.FrameData;
 import network.ycc.raknet.packet.FramedPacket;
+import network.ycc.raknet.pipeline.ReliabilityHandler;
 
 import java.util.concurrent.TimeUnit;
 
@@ -61,6 +62,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final int NACK_REPEAT_EXTENDED_SIZE = 16;
     private static final int FEC_EXTENDED_SIZE = 48;
     private static final int ADVANCED_RECOVERY_EXTENDED_SIZE = 388;
+    private static final int ORDERED_HOL_PROBE_EXTENDED_SIZE = 28;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -74,6 +76,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
         if (future != null) future.cancel(false);
+        ctx.channel().attr(RakNet.REMOTE_ORDERED_HOL).set(null);
     }
 
     private void sendSyncPacket() {
@@ -86,7 +89,8 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                        + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE
                        + DEMAND_EXTENDED_SIZE + NACK_OUTCOME_EXTENDED_SIZE
                        + NACK_POLICY_EXTENDED_SIZE + NACK_REPEAT_EXTENDED_SIZE
-                       + FEC_EXTENDED_SIZE + ADVANCED_RECOVERY_EXTENDED_SIZE);
+                       + FEC_EXTENDED_SIZE + ADVANCED_RECOVERY_EXTENDED_SIZE
+                       + ORDERED_HOL_PROBE_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -194,6 +198,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private final int[] orderedChannelBlockedOrderIndex = new int[8];
     private final long[] orderedChannelReleasedFrames = new long[8];
     private final long[] orderedChannelMaxWaitNanos = new long[8];
+    private boolean isRemoteOrderedHolProbeSupported;
+    private long orderedHolProbes;
+    private long orderedHolProbeBytes;
+    private long orderedHolProbeAckedBytes;
+    private int orderedHolProbeChannel = -1;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -201,7 +210,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             ByteBuf byteBuf = null;
             try {
                 byteBuf = frameData.createData().skipBytes(1);
-                readPayload(byteBuf);
+                if (readPayload(byteBuf)) publishRemoteOrderedHol(ctx);
             } finally {
                 if (byteBuf != null) byteBuf.release();
                 frameData.release();
@@ -209,6 +218,25 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             return;
         }
         super.channelRead(ctx, msg);
+    }
+
+    private void publishRemoteOrderedHol(ChannelHandlerContext ctx) {
+        if (!this.isRemoteAdvancedRecoverySupported || this.orderedWorstChannel < 0
+                || this.orderedWorstChannel >= this.orderedChannelPending.length
+                || this.orderedChannelPending[this.orderedWorstChannel] <= 0) {
+            ctx.channel().attr(RakNet.REMOTE_ORDERED_HOL).set(null);
+            return;
+        }
+        final int channel = this.orderedWorstChannel;
+        final int blockedOrderIndex = this.orderedChannelBlockedOrderIndex[channel];
+        if (blockedOrderIndex < 0) {
+            ctx.channel().attr(RakNet.REMOTE_ORDERED_HOL).set(null);
+            return;
+        }
+        ctx.channel().attr(RakNet.REMOTE_ORDERED_HOL).set(new RakNet.OrderedHolFeedback(
+                channel, blockedOrderIndex, this.orderedChannelOldestAgeNanos[channel], System.nanoTime()));
+        final ReliabilityHandler reliability = ctx.pipeline().get(ReliabilityHandler.class);
+        if (reliability != null) reliability.onRemoteOrderedHolFeedback();
     }
 
     public boolean isRemoteSupported() {
@@ -325,6 +353,11 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public int[] getOrderedChannelBlockedOrderIndex() { return java.util.Arrays.copyOf(orderedChannelBlockedOrderIndex, 8); }
     public long[] getOrderedChannelReleasedFrames() { return java.util.Arrays.copyOf(orderedChannelReleasedFrames, 8); }
     public long[] getOrderedChannelMaxWaitNanos() { return java.util.Arrays.copyOf(orderedChannelMaxWaitNanos, 8); }
+    public boolean isRemoteOrderedHolProbeSupported() { return isRemoteOrderedHolProbeSupported; }
+    public long getOrderedHolProbes() { return orderedHolProbes; }
+    public long getOrderedHolProbeBytes() { return orderedHolProbeBytes; }
+    public long getOrderedHolProbeAckedBytes() { return orderedHolProbeAckedBytes; }
+    public int getOrderedHolProbeChannel() { return orderedHolProbeChannel; }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -418,6 +451,10 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         for (int value : channelBlocked) buffer.writeInt(value);
         for (long value : channelReleased) buffer.writeLong(value);
         for (long value : channelMaxWait) buffer.writeLong(value);
+        buffer.writeLong(logger.getOrderedHolProbes());
+        buffer.writeLong(logger.getOrderedHolProbeBytes());
+        buffer.writeLong(logger.getOrderedHolProbeAckedBytes());
+        buffer.writeInt(logger.getOrderedHolProbeChannel());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -548,6 +585,14 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             for (int i = 0; i < 8; i++) this.orderedChannelReleasedFrames[i] = byteBuf.readLong();
             for (int i = 0; i < 8; i++) this.orderedChannelMaxWaitNanos[i] = byteBuf.readLong();
             this.isRemoteAdvancedRecoverySupported = true;
+        }
+        if (this.isRemoteAdvancedRecoverySupported
+                && byteBuf.readableBytes() >= ORDERED_HOL_PROBE_EXTENDED_SIZE) {
+            this.orderedHolProbes = byteBuf.readLong();
+            this.orderedHolProbeBytes = byteBuf.readLong();
+            this.orderedHolProbeAckedBytes = byteBuf.readLong();
+            this.orderedHolProbeChannel = byteBuf.readInt();
+            this.isRemoteOrderedHolProbeSupported = true;
         }
         return true;
     }

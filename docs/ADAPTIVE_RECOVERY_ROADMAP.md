@@ -41,6 +41,7 @@ path active:
 | `raknetify.ptoProbes` | PTO ordered-data probes | `false` |
 | `raknetify.applicationLimitedRecovery` | application-limited extra recovery | `false` |
 | `raknetify.targetedFec` | recovery-debt targeted FEC | `false` |
+| `raknetify.remoteOrderedHolRecovery` | peer-directed ordered HOL probe | `false` |
 
 For example, `-Draknetify.targetedFec=false` disables only targeted repair. It
 does not disable negotiated bounded FEC or the normal retransmission path.
@@ -187,6 +188,29 @@ latency-sensitive messages instead of all traffic.
 - `targeted_fec_bytes`, `targeted_fec_recovered`
 - Promotion requires loss-simulation tests showing lower ordered completion
   latency without materially increasing queue occupancy or total loss.
+
+## Capture-driven refinement: directed HOL and FEC return
+
+The follow-up capture showed that the local sender queue stayed healthy while
+the peer reported long channel-specific ordered HOL stalls, especially during
+bulk drain. It also showed useful targeted-FEC recovery but very low background
+FEC yield. The next refinement therefore:
+
+- restarts the PTO deadline whenever ACK progress occurs, so an older scheduled
+  task cannot emit a stale probe;
+- feeds the peer's worst blocked ordering channel/index back to the sender and
+  permits one paced exact-FrameSet probe at a bounded interval;
+- prioritizes already-retried ordered data by retry debt when no exact peer
+  target is available;
+- disables background FEC during bulk/queue inflation and temporarily suppresses
+  it when a 64-group feedback window recovers less than one percent, without
+  disabling debt-controlled targeted FEC;
+- resets recovery-debt diagnostics when no retried FrameSet remains.
+
+Directed probes are observable through `ordered_hol_probes`,
+`ordered_hol_probe_bytes`, `ordered_hol_probe_acked_bytes` and the last targeted
+channel. The metrics-sync tail is optional, preserving compatibility with the
+previous 773-byte payload.
 
 ## Verification matrix
 

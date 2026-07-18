@@ -68,6 +68,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long ptoProbes = 0L;
     private volatile long ptoProbeBytes = 0L;
     private volatile long ptoProbeAckedBytes = 0L;
+    private volatile long orderedHolProbes = 0L;
+    private volatile long orderedHolProbeBytes = 0L;
+    private volatile long orderedHolProbeAckedBytes = 0L;
+    private volatile int orderedHolProbeChannel = -1;
     private volatile int ptoCount = 0;
     private volatile long lastAckProgressAgeNanos = 0L;
     private volatile long applicationLimitedRecoveryPackets = 0L;
@@ -261,6 +265,16 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void ptoProbeAcked(int bytes) { ptoProbeAckedBytes += bytes; }
+
+    @Override
+    public void orderedHolProbe(int channel, int bytes) {
+        orderedHolProbes++;
+        orderedHolProbeBytes += bytes;
+        orderedHolProbeChannel = channel;
+    }
+
+    @Override
+    public void orderedHolProbeAcked(int bytes) { orderedHolProbeAckedBytes += bytes; }
 
     @Override
     public void ptoState(int count, long lastAckProgressAgeNanos) {
@@ -715,6 +729,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getPtoProbes() { return ptoProbes; }
     public long getPtoProbeBytes() { return ptoProbeBytes; }
     public long getPtoProbeAckedBytes() { return ptoProbeAckedBytes; }
+    public long getOrderedHolProbes() { return orderedHolProbes; }
+    public long getOrderedHolProbeBytes() { return orderedHolProbeBytes; }
+    public long getOrderedHolProbeAckedBytes() { return orderedHolProbeAckedBytes; }
+    public int getOrderedHolProbeChannel() { return orderedHolProbeChannel; }
     public int getPtoCount() { return ptoCount; }
     public long getLastAckProgressAgeNanos() { return lastAckProgressAgeNanos; }
     public long getApplicationLimitedRecoveryPackets() { return applicationLimitedRecoveryPackets; }
@@ -790,6 +808,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"timeout_retransmit_bytes\":%d,\"rack_retransmit_bytes\":%d," +
                         "\"rack_retransmit_framesets\":%d,\"rack_spurious_acks\":%d," +
                         "\"pto_probes\":%d,\"pto_probe_bytes\":%d,\"pto_probe_acked_bytes\":%d," +
+                        "\"ordered_hol_probes\":%d,\"ordered_hol_probe_bytes\":%d," +
+                        "\"ordered_hol_probe_acked_bytes\":%d,\"ordered_hol_probe_channel\":%d," +
                         "\"pto_count\":%d,\"last_ack_progress_age_ns\":%d," +
                         "\"application_limited_recovery_packets\":%d," +
                         "\"application_limited_recovery_bytes\":%d," +
@@ -878,6 +898,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_ordered_channel_blocked_order_index\":%s," +
                         "\"remote_ordered_channel_released_frames\":%s," +
                         "\"remote_ordered_channel_max_wait_ns\":%s," +
+                        "\"remote_ordered_hol_probe_supported\":%s," +
+                        "\"remote_ordered_hol_probes\":%d," +
+                        "\"remote_ordered_hol_probe_bytes\":%d," +
+                        "\"remote_ordered_hol_probe_acked_bytes\":%d," +
+                        "\"remote_ordered_hol_probe_channel\":%d," +
                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
@@ -888,7 +913,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 nacksDeferredExpired, nacksDeferredConfirmed, nackGraceBypassed,
                 adaptiveNackGraceBypass, nackRepeatedPackets, nackRepeatedFrameSets, nackRetransmitBytes,
                 timeoutRetransmitBytes, rackRetransmitBytes, rackRetransmitFrameSets, rackSpuriousAcks,
-                ptoProbes, ptoProbeBytes, ptoProbeAckedBytes, ptoCount, lastAckProgressAgeNanos,
+                ptoProbes, ptoProbeBytes, ptoProbeAckedBytes,
+                orderedHolProbes, orderedHolProbeBytes, orderedHolProbeAckedBytes, orderedHolProbeChannel,
+                ptoCount, lastAckProgressAgeNanos,
                 applicationLimitedRecoveryPackets, applicationLimitedRecoveryBytes,
                 recoveryQueueDepth, recoveryQueueOldestAgeNanos,
                 recoveryDebt, recoveryDebtChannel, targetedFecPackets, targetedFecBytes,
@@ -947,6 +974,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(remoteOrderedChannelBlockedOrderIndex()),
                 Arrays.toString(remoteOrderedChannelReleasedFrames()),
                 Arrays.toString(remoteOrderedChannelMaxWaitNanos()),
+                isRemoteOrderedHolProbeSupported(), remoteOrderedHolProbes(),
+                remoteOrderedHolProbeBytes(), remoteOrderedHolProbeAckedBytes(), remoteOrderedHolProbeChannel(),
                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
@@ -1065,6 +1094,16 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             ? metricsSynchronizationHandler.getFecRecoveryRatio() : 0D; }
     private boolean isRemoteAdvancedRecoverySupported() { return metricsSynchronizationHandler != null
             && metricsSynchronizationHandler.isRemoteAdvancedRecoverySupported(); }
+    private boolean isRemoteOrderedHolProbeSupported() { return metricsSynchronizationHandler != null
+            && metricsSynchronizationHandler.isRemoteOrderedHolProbeSupported(); }
+    private long remoteOrderedHolProbes() { return isRemoteOrderedHolProbeSupported()
+            ? metricsSynchronizationHandler.getOrderedHolProbes() : 0L; }
+    private long remoteOrderedHolProbeBytes() { return isRemoteOrderedHolProbeSupported()
+            ? metricsSynchronizationHandler.getOrderedHolProbeBytes() : 0L; }
+    private long remoteOrderedHolProbeAckedBytes() { return isRemoteOrderedHolProbeSupported()
+            ? metricsSynchronizationHandler.getOrderedHolProbeAckedBytes() : 0L; }
+    private int remoteOrderedHolProbeChannel() { return isRemoteOrderedHolProbeSupported()
+            ? metricsSynchronizationHandler.getOrderedHolProbeChannel() : -1; }
     private long remoteRackRetransmitBytes() { return isRemoteAdvancedRecoverySupported()
             ? metricsSynchronizationHandler.getRackRetransmitBytes() : 0L; }
     private long remoteRackRetransmitFrameSets() { return isRemoteAdvancedRecoverySupported()

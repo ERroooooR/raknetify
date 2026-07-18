@@ -72,6 +72,8 @@ class MetricsSynchronizationHandlerTest {
         sender.rackSpuriousAck(2);
         sender.ptoProbe(512);
         sender.ptoProbeAcked(512);
+        sender.orderedHolProbe(7, 600);
+        sender.orderedHolProbeAcked(600);
         sender.ptoState(1, 90_000_000L);
         sender.applicationLimitedRecovery(384);
         sender.recoveryQueueState(2, 100_000_000L);
@@ -84,7 +86,7 @@ class MetricsSynchronizationHandlerTest {
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(773, payload.readableBytes());
+            assertEquals(801, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -167,6 +169,30 @@ class MetricsSynchronizationHandlerTest {
             assertEquals(4, receiver.getOrderedChannelPending()[3]);
             assertEquals(27, receiver.getOrderedChannelBlockedOrderIndex()[3]);
             assertEquals(5L, receiver.getOrderedChannelReleasedFrames()[3]);
+            assertTrue(receiver.isRemoteOrderedHolProbeSupported());
+            assertEquals(1L, receiver.getOrderedHolProbes());
+            assertEquals(600L, receiver.getOrderedHolProbeBytes());
+            assertEquals(600L, receiver.getOrderedHolProbeAckedBytes());
+            assertEquals(7, receiver.getOrderedHolProbeChannel());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousAdvancedRecoveryExtensionRemainsReadableWithoutOrderedHolProbeTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.rackRetransmit(512);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
+            payload.writerIndex(773);
+
+            final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteAdvancedRecoverySupported());
+            assertEquals(512L, receiver.getRackRetransmitBytes());
+            assertFalse(receiver.isRemoteOrderedHolProbeSupported());
         } finally {
             payload.release();
         }

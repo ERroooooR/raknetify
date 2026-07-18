@@ -48,6 +48,8 @@ class SimpleMetricsLoggerTest {
         logger.rackSpuriousAck(2);
         logger.ptoProbe(256);
         logger.ptoProbeAcked(256);
+        logger.orderedHolProbe(7, 320);
+        logger.orderedHolProbeAcked(320);
         logger.ptoState(1, 42_000_000L);
         logger.orderedChannelPending(2, 3, 90_000_000L, 17);
         logger.orderedChannelRelease(2, 4, 100_000_000L);
@@ -91,6 +93,10 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"pto_probes\":1"));
         assertTrue(line.contains("\"pto_probe_bytes\":256"));
         assertTrue(line.contains("\"pto_probe_acked_bytes\":256"));
+        assertTrue(line.contains("\"ordered_hol_probes\":1"));
+        assertTrue(line.contains("\"ordered_hol_probe_bytes\":320"));
+        assertTrue(line.contains("\"ordered_hol_probe_acked_bytes\":320"));
+        assertTrue(line.contains("\"ordered_hol_probe_channel\":7"));
         assertTrue(line.contains("\"pto_count\":1"));
         assertTrue(line.contains("\"last_ack_progress_age_ns\":42000000"));
         assertTrue(line.contains("\"ordered_worst_channel\":2"));
@@ -115,6 +121,7 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ack_flush_delay_ns\":8000000"));
         assertTrue(line.contains("\"ack_repeat_delay_ns\":10000000"));
         assertTrue(line.contains("\"remote_ack_policy_supported\":false"));
+        assertTrue(line.contains("\"remote_ordered_hol_probe_supported\":false"));
         assertTrue(line.contains("\"application_limited\":false"));
         assertTrue(line.contains("\"backlog_state\":\"BULK\""));
         assertTrue(line.contains("\"backlog_age_ns\":150000000"));
