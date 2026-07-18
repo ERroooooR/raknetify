@@ -129,6 +129,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile String backlogState = "IDLE";
     private volatile long backlogAgeNanos;
     private volatile long backlogProbes;
+    private volatile long validatedPathRate;
+    private volatile boolean deliverySampleApplicationLimited;
+    private volatile String resumeState = "IDLE";
+    private volatile int resumeValidatedRounds;
     private volatile long adaptiveDeliveryRate;
     private volatile double adaptiveLossRatio;
     private volatile long adaptiveAcknowledged;
@@ -147,6 +151,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long smallWriteFrames;
     private volatile long smallWriteDelayNanos;
     private volatile long pacingDelayNanos;
+    private volatile long pacerWakeupLatenessNanos;
+    private volatile int pacerBatchDatagrams;
+    private volatile int pacerMaxBatchDatagrams;
     private volatile String congestionMode = "STARTUP";
     private volatile long congestionWindowBytes;
     private volatile long inFlightBytes;
@@ -470,6 +477,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     @Override
+    public void adaptivePathModel(long validatedRateBytesPerSecond, boolean sampleApplicationLimited,
+                                  String resumeState, int validatedRounds) {
+        this.validatedPathRate = validatedRateBytesPerSecond;
+        this.deliverySampleApplicationLimited = sampleApplicationLimited;
+        this.resumeState = resumeState;
+        this.resumeValidatedRounds = validatedRounds;
+    }
+
+    @Override
     public void adaptiveDeliveryRate(long bytesPerSecond) { adaptiveDeliveryRate = bytesPerSecond; }
 
     @Override
@@ -516,6 +532,13 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void pacingDelay(long delayNanos) { pacingDelayNanos = delayNanos; }
+
+    @Override
+    public void pacingScheduler(long wakeupLatenessNanos, int datagrams) {
+        pacerWakeupLatenessNanos = wakeupLatenessNanos;
+        pacerBatchDatagrams = datagrams;
+        pacerMaxBatchDatagrams = Math.max(pacerMaxBatchDatagrams, datagrams);
+    }
 
     @Override
     public void congestionControl(String mode, long congestionWindowBytes, long inFlightBytes,
@@ -699,6 +722,13 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getSmallWriteFrames() { return smallWriteFrames; }
     public long getSmallWriteDelayNanos() { return smallWriteDelayNanos; }
     public long getPacingDelayNanos() { return pacingDelayNanos; }
+    public long getValidatedPathRate() { return validatedPathRate; }
+    public boolean isDeliverySampleApplicationLimited() { return deliverySampleApplicationLimited; }
+    public String getResumeState() { return resumeState; }
+    public int getResumeValidatedRounds() { return resumeValidatedRounds; }
+    public long getPacerWakeupLatenessNanos() { return pacerWakeupLatenessNanos; }
+    public int getPacerBatchDatagrams() { return pacerBatchDatagrams; }
+    public int getPacerMaxBatchDatagrams() { return pacerMaxBatchDatagrams; }
     public String getCongestionMode() { return congestionMode; }
     public long getCongestionWindowBytes() { return congestionWindowBytes; }
     public long getInFlightBytes() { return inFlightBytes; }
@@ -833,12 +863,16 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"ack_protection\":%s,\"ack_flush_delay_ns\":%d,\"ack_repeat_delay_ns\":%d," +
                         "\"application_limited\":%s,\"backlog_state\":\"%s\"," +
                         "\"backlog_age_ns\":%d,\"backlog_probes\":%d," +
+                        "\"validated_path_bps\":%d,\"delivery_sample_application_limited\":%s," +
+                        "\"resume_state\":\"%s\",\"resume_validated_rounds\":%d," +
                         "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
                         "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
                         "\"dscp\":%d,\"small_write_batches\":%d,\"small_write_frames\":%d," +
                         "\"small_write_delay_ns\":%d,\"pacing_delay_ns\":%d," +
+                        "\"pacer_wakeup_lateness_ns\":%d,\"pacer_batch_datagrams\":%d," +
+                        "\"pacer_max_batch_datagrams\":%d," +
                         "\"cc_mode\":\"%s\",\"cwnd_bytes\":%d,\"inflight_bytes\":%d," +
                         "\"bandwidth_bps\":%d,\"ack_aggregation_bytes\":%d,\"ecn_ce_ratio\":%.6f," +
                         "\"congestion_reason\":\"%s\",\"rtt_inflation\":%.6f," +
@@ -931,10 +965,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
                 applicationLimited, backlogState, backlogAgeNanos, backlogProbes,
+                validatedPathRate, deliverySampleApplicationLimited, resumeState, resumeValidatedRounds,
                 adaptivePacingRate, adaptiveBytePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
+                pacerWakeupLatenessNanos, pacerBatchDatagrams, pacerMaxBatchDatagrams,
                 congestionMode, congestionWindowBytes, inFlightBytes, bandwidthBytesPerSecond,
                 ackAggregationBytes, ecnCeRatio, congestionReason, rttInflation,
                 pacingCapped, bandwidthProbeSuppressed,

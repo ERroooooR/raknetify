@@ -67,6 +67,8 @@ class SimpleMetricsLoggerTest {
         logger.ackRepeated(3);
         logger.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
         logger.adaptiveDemand(false, "BULK", 150_000_000L, 4L);
+        logger.adaptivePathModel(1048576L, true, "UNVALIDATED", 1);
+        logger.pacingScheduler(5_000_000L, 3);
         logger.fecRecovered(2);
         logger.fecParity(4, 4096);
         logger.fecExpired(1);
@@ -111,6 +113,12 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"targeted_fec_bytes\":384"));
         assertTrue(line.contains("\"targeted_fec_recovered\":1"));
         assertTrue(line.contains("\"byte_pacing_bps\":512000"));
+        assertTrue(line.contains("\"validated_path_bps\":1048576"));
+        assertTrue(line.contains("\"delivery_sample_application_limited\":true"));
+        assertTrue(line.contains("\"resume_state\":\"UNVALIDATED\""));
+        assertTrue(line.contains("\"resume_validated_rounds\":1"));
+        assertTrue(line.contains("\"pacer_wakeup_lateness_ns\":5000000"));
+        assertTrue(line.contains("\"pacer_batch_datagrams\":3"));
         assertTrue(line.contains("\"fragment_pending_builders\":2"));
         assertTrue(line.contains("\"ordered_pending_frames\":3"));
         assertTrue(line.contains("\"application_batches\":1"));
