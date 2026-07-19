@@ -72,9 +72,12 @@ during healthy traffic. Three duplicate reliable FrameSets within one second act
 least two seconds;
 ACK ranges are then coalesced and repeated once after an RTT-derived 5-20 ms delay. This protects
 the feedback direction without permanently doubling ACK traffic. A sender-local burst drain floor
-activates only while its queued plus in-flight data exceeds 48 KiB and targets roughly 500 ms of
-drain time. New connections remain capped at 600 PPS until an ACK history is established; healthy
-bursts then approach the configured 2000 packet-per-second default in steps of at most 2x. Isolated
+activates only while its queued plus in-flight data exceeds 48 KiB and uses a four-RTT drain horizon
+clamped to 100-500 ms. New connections remain byte-paced at a conservative bootstrap rate while two
+small ACK rounds validate the path; their PPS probe remains capped at 600 until useful ACK history is
+established. During the protected first minute, healthy samples raise admission geometrically without
+bypassing the byte bucket. Later healthy bursts retain at least 80% of recently validated path capacity
+and approach the configured 2000 packet-per-second default in steps of at most 2x. Isolated
 loss permits only bounded growth up to 600 PPS, while active `RATE_LIMIT`, `QUEUE` or MTU-black-hole
 signals disable the backlog floor entirely. After loss becomes quiet, recovery starts near 100 PPS
 and doubles every 500 ms up to 600 PPS before normal healthy control resumes. The floor exits below
@@ -96,8 +99,8 @@ The adaptive policies can be disabled independently for comparison with
 `-Draknetify.adaptiveAckProtection=false`. FEC packet, byte, recovery, expiry, shard-budget and
 recovery-ratio metrics are synchronized in both directions so sender effectiveness is not inferred
 from receiver-local counters.
-`backlog_state` reports `BULK` only while this floor is active; `backlog_probes` remains zero. The
-normal healthy ceiling defaults to 2000 packets per second.
+`backlog_state` reports `BULK` only while this floor is active; `backlog_probes` counts successful
+ACK-driven admission increases. The normal healthy ceiling defaults to 2000 packets per second.
 Output is always written to `logs/raknetify-metrics.jsonl` under the game or proxy working directory;
 no output path argument is needed. The file and missing `logs` directory are created during
 mod/plugin startup. Path, permission and writer errors are printed to the process log, then disable
