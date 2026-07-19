@@ -36,6 +36,7 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import network.ycc.raknet.frame.FrameData;
 import network.ycc.raknet.packet.FramedPacket;
+import network.ycc.raknet.RakNet;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -155,6 +156,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private FrameData encode0(ChannelHandlerContext ctx, ByteBuf buf) {
         if (buf.isReadable()) {
+            if (ctx.pipeline().get("zstd_encoder") != null
+                    && ctx.channel().config() instanceof RakNet.Config config) {
+                config.getMetrics().applicationBatch(buf.readableBytes());
+            }
             final int packetChannelOverride = getChannelOverride(buf, !isMultichannelEnabled);
             if (packetChannelOverride == Integer.MIN_VALUE) {
                 return null; // the void

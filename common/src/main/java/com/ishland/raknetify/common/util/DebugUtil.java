@@ -75,6 +75,30 @@ public class DebugUtil {
                                 logger.getMeasureBurstTokens() + config.getDefaultPendingFrameSets()
                         )).append('\n');
 
+                b.append("Adaptive: %s/%s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, RTT inflation %.2fx, capped %s, MTU %d"
+                        .formatted(logger.getAdaptiveLossType(), logger.getCongestionReason(), logger.getAdaptivePacingRate(),
+                                logger.getAdaptiveDeliveryRate() / 1024.0,
+                                logger.getAdaptiveLossRatio() * 100.0,
+                                logger.getRttInflation(), logger.isPacingCapped(),
+                                logger.getAdaptiveMTU() > 0 ? logger.getAdaptiveMTU() : config.getMTU()))
+                        .append('\n');
+                b.append("Adaptive recovery: FEC %d/%d protected, expired %d; MTU probes %d/%d/%d"
+                        .formatted(logger.getFecRecovered(), logger.getFecParityPackets(), logger.getFecExpired(),
+                                logger.getMtuProbesSent(), logger.getMtuProbesAcknowledged(),
+                                logger.getMtuProbesTimedOut())).append('\n');
+                b.append("Retransmission recovery: deferred NACK %d, reordered %d, NACK %.1fKiB, timeout %.1fKiB"
+                        .formatted(logger.getNacksDeferred(), logger.getReorderedPackets(),
+                                logger.getNackRetransmitBytes() / 1024.0,
+                                logger.getTimeoutRetransmitBytes() / 1024.0)).append('\n');
+                b.append("Congestion control: %s, cwnd %.1fKiB, in-flight %.1fKiB, bandwidth %.1fKiB/s, ACK aggregation %.1fKiB, ECN-CE %.3f%%"
+                        .formatted(logger.getCongestionMode(), logger.getCongestionWindowBytes() / 1024.0,
+                                logger.getInFlightBytes() / 1024.0, logger.getBandwidthBytesPerSecond() / 1024.0,
+                                logger.getAckAggregationBytes() / 1024.0, logger.getEcnCeRatio() * 100.0)).append('\n');
+                b.append("DPLPMTUD: %s, confirmed/probe/max %d/%d/%d; RS shards %d+%d, recovery %.2f%%"
+                        .formatted(logger.getPathMtuState(), logger.getAdaptiveMTU(), logger.getPathMtuProbe(),
+                                logger.getPathMtuMaximum(), logger.getFecDataShards(), logger.getFecParityShards(),
+                                logger.getFecRecoveryRatio() * 100.0)).append('\n');
+
                 if (sync != null && sync.isRemoteSupported()) {
                     b.append("Remote Statistics: ERR: %.4f%%, %d tx, %d rx, Burst: %d"
                             .formatted(
@@ -82,6 +106,19 @@ public class DebugUtil {
                                     sync.getTX(), sync.getRX(),
                                     sync.getBurst()
                             )).append('\n');
+                    if (sync.isRemoteAdaptiveSupported()) {
+                        b.append("Remote adaptive: %s/%s, mode %s, pacing %.1fpps, delivery %.1fKiB/s, loss %.3f%%, RTT inflation %.2fx, capped %s"
+                                .formatted(sync.getLossType(), sync.getCongestionReason(), sync.getCongestionMode(),
+                                        sync.getPacingRate(), sync.getDeliveryRate() / 1024.0,
+                                        sync.getLossRatio() * 100.0, sync.getRttInflation(), sync.isPacingCapped()))
+                                .append('\n');
+                    }
+                    if (sync.isRemoteRecoverySupported()) {
+                        b.append("Remote retransmission recovery: deferred NACK %d, reordered %d, NACK %.1fKiB, timeout %.1fKiB"
+                                .formatted(sync.getNacksDeferred(), sync.getReorderedPackets(),
+                                        sync.getNackRetransmitBytes() / 1024.0,
+                                        sync.getTimeoutRetransmitBytes() / 1024.0)).append('\n');
+                    }
                 }
 
                 final MultiChannelingStreamingCompression compression = channel.pipeline().get(MultiChannelingStreamingCompression.class);

@@ -54,6 +54,7 @@ public class MultiChannelingStreamingCompression extends ChannelDuplexHandler {
 
     private final int rawPacketId;
     private final int compressedPacketId;
+    private final boolean enabled;
 
     private volatile long outBytesRaw = 0L;
     private volatile long outBytesCompressed = 0L;
@@ -63,11 +64,17 @@ public class MultiChannelingStreamingCompression extends ChannelDuplexHandler {
     private boolean active = false;
 
     public MultiChannelingStreamingCompression(int rawPacketId, int compressedPacketId) {
+        this(rawPacketId, compressedPacketId, true);
+    }
+
+    public MultiChannelingStreamingCompression(int rawPacketId, int compressedPacketId, boolean enabled) {
         this.rawPacketId = rawPacketId;
         this.compressedPacketId = compressedPacketId;
+        this.enabled = enabled;
     }
 
     private void doServerHandshake(ChannelHandlerContext ctx) {
+        if (!enabled) return;
         final ByteBuf buf = ctx.alloc().buffer().writeLong(SERVER_HANDSHAKE);
         try {
             final FrameData data = FrameData.create(ctx.alloc(), Constants.RAKNET_STREAMING_COMPRESSION_HANDSHAKE_PACKET_ID,
@@ -79,7 +86,7 @@ public class MultiChannelingStreamingCompression extends ChannelDuplexHandler {
     }
 
     private void doChannelStart(ChannelHandlerContext ctx) {
-        if (!active) return;
+        if (!enabled || !active) return;
         ByteBuf buf = ctx.alloc().buffer().writeLong(CHANNEL_START);
         try {
             for (int i = 0; i < 8; i++) {
@@ -119,6 +126,10 @@ public class MultiChannelingStreamingCompression extends ChannelDuplexHandler {
         if (msg instanceof FrameData compressedFrameData) {
             compressedFrameData.touch();
             if (compressedFrameData.getPacketId() == Constants.RAKNET_STREAMING_COMPRESSION_HANDSHAKE_PACKET_ID) {
+                if (!enabled) {
+                    compressedFrameData.release();
+                    return;
+                }
                 final int orderChannel = compressedFrameData.getOrderChannel();
                 ByteBuf payload = null;
                 try {
@@ -251,10 +262,16 @@ public class MultiChannelingStreamingCompression extends ChannelDuplexHandler {
         return active;
     }
 
+    public boolean isEnabled() {
+        return enabled;
+    }
+
     private ScheduledFuture<?> future;
 
     public void handlerAdded(ChannelHandlerContext ctx) {
-        this.future = ctx.channel().eventLoop().scheduleAtFixedRate(this::tickMetrics, 1000, 1000, TimeUnit.MILLISECONDS);
+        if (enabled) {
+            this.future = ctx.channel().eventLoop().scheduleAtFixedRate(this::tickMetrics, 1000, 1000, TimeUnit.MILLISECONDS);
+        }
     }
 
     @Override

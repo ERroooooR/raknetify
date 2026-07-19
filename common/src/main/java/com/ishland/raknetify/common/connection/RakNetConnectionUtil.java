@@ -49,6 +49,14 @@ public class RakNetConnectionUtil {
 
     private static final AttributeKey<Boolean> RAKNETIFY_INITIALIZED = AttributeKey.valueOf("raknetify:initialized");
     private static final AttributeKey<Boolean> RAKNETIFY_PARENT_INITIALIZED = AttributeKey.valueOf("raknetify:parent-initialized");
+    private static final boolean BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED = Boolean.parseBoolean(
+            System.getProperty("raknetify.bandwidthOptimizerCompatibility", "true")
+    );
+    private static final boolean ZSTD_COMPRESSER_COMPATIBILITY_ENABLED = Boolean.parseBoolean(
+            System.getProperty("raknetify.zstdCompresserCompatibility", "true")
+    );
+    private static volatile boolean externalStreamingCompression = false;
+    private static volatile boolean suppressVanillaCompression = false;
 
     public static final int IP_TOS_LOWDELAY = 0b00010000;
     public static final int IP_TOS_THROUGHPUT = 0b00001000;
@@ -58,6 +66,13 @@ public class RakNetConnectionUtil {
     public static final int DEFAULT_RETRY_DELAY_MILLIS = configuredInt("raknetify.retryDelayMillis", 50, 1, 1000);
     public static final int DEFAULT_READ_TIMEOUT_SECONDS = configuredInt("raknetify.readTimeoutSeconds", 15, 1, 120);
     public static final boolean DEFAULT_NACK_ENABLED = Boolean.parseBoolean(System.getProperty("raknetify.nackEnabled", "true"));
+    public static final boolean DEFAULT_ADAPTIVE_TRANSPORT = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveTransport", "true"));
+    public static final boolean DEFAULT_ADAPTIVE_DSCP = Boolean.parseBoolean(System.getProperty("raknetify.adaptiveDscp", "false"));
+    public static final int DEFAULT_PROTOCOL_VERSION = configuredInt("raknetify.protocolVersion", 12, 9, 12);
+    public static final int DEFAULT_ADAPTIVE_MIN_PPS = configuredInt("raknetify.adaptiveMinPps", 30, 1, 100_000);
+    public static final int DEFAULT_ADAPTIVE_MAX_PPS = configuredInt("raknetify.adaptiveMaxPps", 2000, 1, 100_000);
+    public static final int DEFAULT_SMALL_WRITE_COALESCE_MICROS = configuredInt("raknetify.smallWriteCoalesceMicros", 500, 0, 100_000);
+    public static final int DEFAULT_PLPMTUD_MAX_MTU = configuredInt("raknetify.plpmtudMaxMtu", 1452, 576, 65_507);
 
     private RakNetConnectionUtil() {
     }
@@ -71,12 +86,23 @@ public class RakNetConnectionUtil {
 
     public static void initChannel(Channel channel) {
         if (channel.config() instanceof RakNet.Config config) {
+            initializeCompatibility();
             config.setMaxQueuedBytes(Constants.MAX_QUEUED_SIZE);
             config.setMaxPendingFrameSets(Constants.MAX_PENDING_FRAME_SETS);
             config.setRetryDelayNanos(TimeUnit.NANOSECONDS.convert(DEFAULT_RETRY_DELAY_MILLIS, TimeUnit.MILLISECONDS));
             config.setDefaultPendingFrameSets(Constants.DEFAULT_PENDING_FRAME_SETS);
             config.setNACKEnabled(DEFAULT_NACK_ENABLED);
             config.setNoDelayEnabled(false);
+            config.setAdaptiveTransportEnabled(DEFAULT_ADAPTIVE_TRANSPORT);
+            config.setAdaptiveDscpEnabled(DEFAULT_ADAPTIVE_DSCP);
+            config.setAdaptiveMinPps(Math.min(DEFAULT_ADAPTIVE_MIN_PPS, DEFAULT_ADAPTIVE_MAX_PPS));
+            config.setAdaptiveMaxPps(Math.max(DEFAULT_ADAPTIVE_MIN_PPS, DEFAULT_ADAPTIVE_MAX_PPS));
+            config.setSmallWriteCoalesceMicros(DEFAULT_SMALL_WRITE_COALESCE_MICROS);
+            config.setPlpmtudMaxMtu(Math.max(config.getMTU(), DEFAULT_PLPMTUD_MAX_MTU));
+            // This is an explicit JVM override, not a minimum version. In particular,
+            // test and compatibility runs must be able to force v11 when netty-raknet
+            // itself defaults to v12.
+            config.setProtocolVersion(DEFAULT_PROTOCOL_VERSION);
 //            config.setIgnoreResendGauge(true);
 
             if (Boolean.TRUE.equals(channel.attr(RAKNETIFY_INITIALIZED).get())) {
@@ -89,9 +115,101 @@ public class RakNetConnectionUtil {
 //            channel.pipeline().addLast("raknetify-flush-enforcer", new FlushEnforcer());
 //            channel.pipeline().addLast("raknetify-flush-consolidation", new FlushConsolidationHandler(Integer.MAX_VALUE, true));
             channel.pipeline().addLast("raknetify-no-flush", new NoFlush());
-            channel.pipeline().addLast(MultiChannelingStreamingCompression.NAME, new MultiChannelingStreamingCompression(Constants.RAKNET_GAME_PACKET_ID, Constants.RAKNET_STREAMING_COMPRESSION_PACKET_ID));
+            channel.pipeline().addLast(MultiChannelingStreamingCompression.NAME, new MultiChannelingStreamingCompression(
+                    Constants.RAKNET_GAME_PACKET_ID,
+                    Constants.RAKNET_STREAMING_COMPRESSION_PACKET_ID,
+                    !externalStreamingCompression
+            ));
 //            channel.pipeline().addLast(MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             channel.pipeline().addLast("raknetify-frame-data-blocker", new FrameDataBlocker());
+        }
+    }
+
+    /**
+     * Selects an encoded-packet transport compressor supplied by another mod.
+     * Raknetify keeps its compression handler in the pipeline for stable handler
+     * ordering, but does not negotiate or run Deflate on top of that transport.
+     */
+    public static void useExternalStreamingCompression(String source) {
+        useExternalStreamingCompression(source, true);
+    }
+
+    public static synchronized void useExternalStreamingCompression(String source, boolean suppressVanillaCompression) {
+        if (externalStreamingCompression) {
+            RakNetConnectionUtil.suppressVanillaCompression |= suppressVanillaCompression;
+            return;
+        }
+        externalStreamingCompression = true;
+        RakNetConnectionUtil.suppressVanillaCompression = suppressVanillaCompression;
+        System.out.println("Raknetify: Using " + source + " for packet compression; Raknetify streaming compression is disabled");
+    }
+
+    public static boolean isExternalStreamingCompressionEnabled() {
+        return externalStreamingCompression;
+    }
+
+    public static boolean isBandwidthOptimizerCompatibilityEnabled() {
+        return BANDWIDTH_OPTIMIZER_COMPATIBILITY_ENABLED;
+    }
+
+    public static boolean isZstdCompresserCompatibilityEnabled() {
+        return ZSTD_COMPRESSER_COMPATIBILITY_ENABLED;
+    }
+
+    public static boolean shouldSuppressVanillaCompression() {
+        return suppressVanillaCompression;
+    }
+
+    public static void initializeCompatibility() {
+        if (!externalStreamingCompression && detectZstdCompresserClient()) {
+            // ZSTD_Compresser uses the vanilla SetCompression packet as the signal
+            // that both endpoints should replace their compression handlers. Keep
+            // that packet, while preventing Raknetify from adding Deflate on top.
+            // Probe it before BandwidthOptimizer so this required negotiation also
+            // survives when both compatibility targets are installed.
+            useExternalStreamingCompression("ZSTD_Compresser", false);
+        } else if (!externalStreamingCompression && detectBandwidthOptimizer()) {
+            useExternalStreamingCompression("BandwidthOptimizer", true);
+        }
+    }
+
+    private static boolean detectBandwidthOptimizer() {
+        if (!isBandwidthOptimizerCompatibilityEnabled()) {
+            return false;
+        }
+
+        return detectClass("BandwidthOptimizer", "com.PinkCats.bandwidthoptimizer.Bandwidthoptimizer");
+    }
+
+    private static boolean detectZstdCompresserClient() {
+        if (!isZstdCompresserCompatibilityEnabled()) {
+            return false;
+        }
+
+        return detectClass("ZSTD_Compresser", "top.furryaxw.zstd_compresser.Zstd_compresser");
+    }
+
+    private static boolean detectClass(String source, String className) {
+        // Do not rely solely on FabricLoader here. When Raknetify is translated by
+        // Sinytra Connector, native NeoForge mods are not necessarily visible in
+        // FabricLoader's mod list, even though they share the runtime class path.
+        final ClassLoader classLoader = RakNetConnectionUtil.class.getClassLoader();
+        final String classResource = className.replace('.', '/') + ".class";
+        try {
+            if (classLoader.getResource(classResource) != null) {
+                return true;
+            }
+            Class.forName(
+                    className,
+                    false,
+                    classLoader
+            );
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        } catch (LinkageError | SecurityException error) {
+            System.err.println("Raknetify: " + source + " compatibility probe failed: " + error);
+            return false;
         }
     }
 

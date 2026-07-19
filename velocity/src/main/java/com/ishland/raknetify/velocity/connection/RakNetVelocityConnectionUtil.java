@@ -55,8 +55,13 @@ public class RakNetVelocityConnectionUtil {
         if (channel.config() instanceof RakNet.Config) {
             RakNetConnectionUtil.initChannel(channel);
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
-            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID));
-            channel.pipeline().addAfter(RakNetSimpleMultiChannelCodec.NAME, ByteBufCopyDecoder.NAME, new ByteBufCopyDecoder());
+            final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
+            multiChannelCodec.addHandler((buf, suppressWarning) ->
+                    channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null ? 7 : 0
+            );
+            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
+            channel.pipeline().addAfter(RakNetSimpleMultiChannelCodec.NAME, ZstdCompresserCompatibilityHandler.NAME, new ZstdCompresserCompatibilityHandler());
+            channel.pipeline().addAfter(ZstdCompresserCompatibilityHandler.NAME, ByteBufCopyDecoder.NAME, new ByteBufCopyDecoder());
         }
     }
 

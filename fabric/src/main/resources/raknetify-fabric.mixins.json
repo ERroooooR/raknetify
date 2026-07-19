@@ -30,6 +30,7 @@
     "common.encryption.MixinPacketEncryptor",
     "common.quirks.MixinPlayerEntity",
     "common.quirks.MixinSampleSubscriptionTracker",
+    "compat.bandwidthoptimizer.MixinChannelTransportBatchManager",
     "compat.fabricapi.MixinServerLoginNetworkAddon",
     "compat.krypton.MixinServerLoginNetworkHandler",
     "compat.qsl.MixinServerLoginNetworkAddon",

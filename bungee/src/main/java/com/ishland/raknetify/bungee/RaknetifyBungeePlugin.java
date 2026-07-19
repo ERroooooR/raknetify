@@ -26,6 +26,7 @@ package com.ishland.raknetify.bungee;
 
 import com.ishland.raknetify.bungee.connection.RakNetBungeeConnectionUtil;
 import com.ishland.raknetify.bungee.init.BungeeRaknetifyServer;
+import com.ishland.raknetify.common.connection.SimpleMetricsLogger;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import net.md_5.bungee.api.event.PostLoginEvent;
 import net.md_5.bungee.api.event.ServerConnectedEvent;
@@ -47,6 +48,7 @@ public class RaknetifyBungeePlugin extends Plugin implements Listener {
         INSTANCE = this;
         LOGGER = this.getLogger();
 
+        SimpleMetricsLogger.initializeMetricsExport();
         ProtocolMultiChannelMappings.init();
 
         BungeeRaknetifyServer.inject();

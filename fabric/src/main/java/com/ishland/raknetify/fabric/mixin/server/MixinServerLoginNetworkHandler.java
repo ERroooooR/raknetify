@@ -25,6 +25,7 @@
 package com.ishland.raknetify.fabric.mixin.server;
 
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
+import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.fabric.mixin.access.IClientConnection;
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import net.minecraft.network.ClientConnection;
@@ -48,8 +49,8 @@ public class MixinServerLoginNetworkHandler {
     private boolean stopCompressionIfStreamingCompressionExists(ClientConnection instance, Packet<?> packet, PacketCallbacks callbacks) {
         if (packet instanceof LoginCompressionS2CPacket) {
             final MultiChannelingStreamingCompression compression = ((IClientConnection) this.connection).getChannel().pipeline().get(MultiChannelingStreamingCompression.class);
-            if (compression != null && compression.isActive()) {
-                System.out.println("Raknetify: Preventing vanilla compression as streaming compression is enabled");
+            if (compression != null && (RakNetConnectionUtil.shouldSuppressVanillaCompression() || compression.isActive())) {
+                System.out.println("Raknetify: Preventing vanilla compression as transport compression is enabled");
                 return false;
             }
         }
