@@ -111,3 +111,6 @@ Still required in an external Minecraft test environment:
 - Exercise Fabric and Sinytra Connector/NeoForge clients through Velocity and Bungee.
 - Run Create and Touhou Little Maid integration loops for at least 100 portal/server transitions
   under 1-5% datagram loss, recording crashes, entity invariants and Raknetify JSONL metrics.
+
+The reproducible setup, fault profiles and machine-verifiable acceptance command are documented in
+`CAUSAL_MULTICHANNEL_INTEGRATION_TEST.md`.

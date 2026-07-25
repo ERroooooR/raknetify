@@ -34,6 +34,7 @@ import io.netty.util.ReferenceCountUtil;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 import network.ycc.raknet.frame.FrameData;
+import network.ycc.raknet.RakNet;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -132,6 +133,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         activeFenceId = nextFenceId++;
         activeFenceEpoch = outboundEpoch + 1;
         activeFencePromises.add(promise);
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalFenceStarted(activeFenceEpoch);
+        }
 
         for (int channel = 0; channel < CausalFenceProtocol.ORDER_CHANNEL_COUNT; channel++) {
             if ((channelMask & 1 << channel) == 0) {
@@ -244,6 +249,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             inboundFences.remove(request.fenceId());
             inboundEpoch = fence.epoch;
             lastCompletedInboundFenceId = request.fenceId();
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalInboundFenceCompleted(inboundEpoch);
+            }
             ctx.fireUserEventTriggered(new InboundEpochAdvanced(inboundEpoch));
             writeFenceAck(ctx, request.fenceId(), inboundEpoch);
         }
@@ -285,6 +294,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
 
         waitingForAck = false;
         outboundEpoch = activeFenceEpoch;
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalFenceCompleted(outboundEpoch);
+        }
         flushQueuedWrites(ctx);
         ctx.fireUserEventTriggered(new OutboundEpochAdvanced(outboundEpoch));
         activeFencePromises.forEach(ChannelPromise::trySuccess);
@@ -326,6 +339,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             return;
         }
         waitingForAck = false;
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalFenceFailed();
+        }
         activeFencePromises.forEach(promise -> promise.tryFailure(cause));
         activeFencePromises.clear();
         failQueuedWrites(cause);
@@ -344,11 +361,25 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
+        if (waitingForAck) {
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalFenceFailed();
+            }
+        }
         activeFencePromises.forEach(promise -> promise.tryFailure(cause));
         activeFencePromises.clear();
         failQueuedWrites(cause);
         inboundFences.clear();
         super.handlerRemoved(ctx);
+    }
+
+    private static SimpleMetricsLogger metrics(ChannelHandlerContext ctx) {
+        if (ctx.channel().config() instanceof RakNet.Config config
+                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
+            return logger;
+        }
+        return null;
     }
 
     public record InboundEpochAdvanced(int epoch) {

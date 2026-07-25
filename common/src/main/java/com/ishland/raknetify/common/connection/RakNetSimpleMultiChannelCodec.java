@@ -111,7 +111,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             pendingControlWrite.promise.tryFailure(cause);
             ReferenceCountUtil.safeRelease(pendingControlWrite.message);
         }
-        failPendingInboundEpochFrames();
+        failPendingInboundEpochFrames(ctx);
         failScheduledWrites(ctx, cause);
         super.handlerRemoved(ctx);
     }
@@ -293,6 +293,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                     }
                 }
             });
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalAtomicBundleOutbound(promises.size());
+            }
             writeFrame(
                     ctx,
                     frameData,
@@ -524,6 +528,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
     }
 
+    private static SimpleMetricsLogger metrics(ChannelHandlerContext ctx) {
+        if (ctx.channel().config() instanceof RakNet.Config config
+                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
+            return logger;
+        }
+        return null;
+    }
+
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof FrameData packet && !packet.isFragment() && packet.getDataSize() > 0) {
@@ -604,6 +616,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         } finally {
             payload.release();
         }
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalAtomicBundleInbound(packets.size());
+        }
         firePackets(ctx, packets);
     }
 
@@ -616,6 +632,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             throw exception;
         }
         if (epoch < inboundEpoch) {
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalStaleFrameDropped();
+            }
             payload.release();
             return;
         }
@@ -628,6 +648,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             }
             pendingInboundEpochFrames.add(new PendingInboundEpochFrame(epoch, payload));
             pendingInboundEpochBytes += payload.readableBytes();
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalFutureFrameQueued(
+                        pendingInboundEpochFrames.size(),
+                        pendingInboundEpochBytes
+                );
+            }
             return;
         }
         fireEpochGameplayFrame(ctx, payload);
@@ -643,6 +670,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         if (gameplayFrame.epoch() != inboundEpoch) {
             gameplayFrame.packets().forEach(ReferenceCountUtil::safeRelease);
             throw new CorruptedFrameException("Gameplay epoch changed while decoding");
+        }
+        if (gameplayFrame.atomicBundle()) {
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalAtomicBundleInbound(gameplayFrame.packets().size());
+            }
         }
         firePackets(ctx, gameplayFrame.packets());
     }
@@ -680,14 +713,25 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 pendingInboundEpochBytes += pending.payload.readableBytes();
             }
         }
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalFutureQueueState(
+                    pendingInboundEpochFrames.size(),
+                    pendingInboundEpochBytes
+            );
+        }
     }
 
-    private void failPendingInboundEpochFrames() {
+    private void failPendingInboundEpochFrames(ChannelHandlerContext ctx) {
         PendingInboundEpochFrame pending;
         while ((pending = pendingInboundEpochFrames.poll()) != null) {
             pending.payload.release();
         }
         pendingInboundEpochBytes = 0;
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalFutureQueueState(0, 0L);
+        }
     }
 
     @Override
