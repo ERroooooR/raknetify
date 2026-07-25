@@ -51,7 +51,7 @@ public class Constants {
     public static final int LARGE_MTU = 8192;
     public static final int MAX_PENDING_FRAME_SETS = 512;
     public static final int DEFAULT_PENDING_FRAME_SETS = 4;
-    public static final int[] SYNC_IGNORE_CHANNELS = new int[] {1};
+    public static final int[] SYNC_IGNORE_CHANNELS = new int[0];
 
     private Constants() {
     }

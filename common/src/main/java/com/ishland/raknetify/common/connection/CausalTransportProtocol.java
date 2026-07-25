@@ -28,8 +28,10 @@ import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
+import io.netty.channel.Channel;
 import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.AttributeKey;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,13 +46,22 @@ public final class CausalTransportProtocol {
 
     public static final int VERSION = 1;
     public static final long CAPABILITY_ATOMIC_BUNDLE = 1L;
-    public static final long LOCAL_CAPABILITIES = CAPABILITY_ATOMIC_BUNDLE;
+    public static final long CAPABILITY_LOSSLESS_FENCE = 1L << 1;
+    public static final long CAPABILITY_GAMEPLAY_EPOCH = 1L << 2;
+    public static final long LOCAL_CAPABILITIES = CAPABILITY_ATOMIC_BUNDLE
+            | CAPABILITY_LOSSLESS_FENCE
+            | CAPABILITY_GAMEPLAY_EPOCH;
+    public static final AttributeKey<Long> NEGOTIATED_CAPABILITIES =
+            AttributeKey.valueOf("raknetify:causal-capabilities");
 
     public static final int MAX_ATOMIC_BUNDLE_PACKETS = 4096;
     public static final int MAX_ATOMIC_BUNDLE_BYTES = 64 * 1024 * 1024;
 
     private static final int CONTROL_MAGIC = 0x524b4331; // "RKC1"
     private static final int CONTROL_CAPABILITIES = 1;
+    private static final int EPOCH_FRAME_VERSION = 2;
+    private static final int EPOCH_FRAME_SINGLE = 1;
+    private static final int EPOCH_FRAME_BUNDLE = 2;
     // The canonical five-byte VarInt encoding of -1. Negative Minecraft packet
     // ids are invalid, making this marker unambiguous inside a game frame.
     private static final byte[] BUNDLE_MARKER = new byte[]{
@@ -85,8 +96,51 @@ public final class CausalTransportProtocol {
         return new Capabilities(version, payload.readLong());
     }
 
+    public static long negotiateCapabilities(long remoteCapabilities) {
+        long negotiated = remoteCapabilities & LOCAL_CAPABILITIES;
+        if ((negotiated & CAPABILITY_ATOMIC_BUNDLE) == 0
+                || (negotiated & CAPABILITY_LOSSLESS_FENCE) == 0) {
+            negotiated &= ~CAPABILITY_GAMEPLAY_EPOCH;
+        }
+        return negotiated;
+    }
+
+    public static void setNegotiatedCapabilities(Channel channel, long capabilities) {
+        channel.attr(NEGOTIATED_CAPABILITIES).set(capabilities);
+        if (channel.parent() != null) {
+            channel.parent().attr(NEGOTIATED_CAPABILITIES).set(capabilities);
+        }
+    }
+
+    public static long getNegotiatedCapabilities(Channel channel) {
+        final Long capabilities = channel.attr(NEGOTIATED_CAPABILITIES).get();
+        return capabilities == null ? 0L : capabilities;
+    }
+
+    public static boolean hasCapability(Channel channel, long capability) {
+        return (getNegotiatedCapabilities(channel) & capability) != 0;
+    }
+
     public static boolean isAtomicBundle(ByteBuf payload) {
-        if (payload.readableBytes() < BUNDLE_MARKER.length + 2) {
+        return hasCausalMarker(payload)
+                && payload.getUnsignedByte(payload.readerIndex() + BUNDLE_MARKER.length) == VERSION;
+    }
+
+    public static boolean isEpochGameplayFrame(ByteBuf payload) {
+        return hasCausalMarker(payload)
+                && payload.getUnsignedByte(payload.readerIndex() + BUNDLE_MARKER.length)
+                == EPOCH_FRAME_VERSION;
+    }
+
+    public static boolean isEpochAtomicBundle(ByteBuf payload) {
+        return isEpochGameplayFrame(payload)
+                && payload.readableBytes() >= BUNDLE_MARKER.length + 2
+                && payload.getUnsignedByte(payload.readerIndex() + BUNDLE_MARKER.length + 1)
+                == EPOCH_FRAME_BUNDLE;
+    }
+
+    private static boolean hasCausalMarker(ByteBuf payload) {
+        if (payload.readableBytes() < BUNDLE_MARKER.length + 1) {
             return false;
         }
         final int offset = payload.readerIndex();
@@ -98,12 +152,53 @@ public final class CausalTransportProtocol {
         return true;
     }
 
+    public static ByteBuf encodeGameplayFrame(
+            ByteBufAllocator allocator,
+            int epoch,
+            ByteBuf packet
+    ) {
+        requireValidEpoch(epoch);
+        if (!packet.isReadable()) {
+            throw new IllegalArgumentException("Cannot encode an empty gameplay frame");
+        }
+        final int encodedBytes = BUNDLE_MARKER.length + 2
+                + MathUtil.varIntSize(epoch)
+                + packet.readableBytes();
+        final ByteBuf out = allocator.buffer(encodedBytes, encodedBytes);
+        out.writeBytes(BUNDLE_MARKER);
+        out.writeByte(EPOCH_FRAME_VERSION);
+        out.writeByte(EPOCH_FRAME_SINGLE);
+        MathUtil.writeVarInt(out, epoch);
+        out.writeBytes(packet, packet.readerIndex(), packet.readableBytes());
+        return out;
+    }
+
     public static ByteBuf encodeAtomicBundle(ByteBufAllocator allocator, List<ByteBuf> packets) {
+        return encodeAtomicBundle0(allocator, -1, packets);
+    }
+
+    public static ByteBuf encodeAtomicBundle(
+            ByteBufAllocator allocator,
+            int epoch,
+            List<ByteBuf> packets
+    ) {
+        requireValidEpoch(epoch);
+        return encodeAtomicBundle0(allocator, epoch, packets);
+    }
+
+    private static ByteBuf encodeAtomicBundle0(
+            ByteBufAllocator allocator,
+            int epoch,
+            List<ByteBuf> packets
+    ) {
         if (packets.size() < 2 || packets.size() > MAX_ATOMIC_BUNDLE_PACKETS) {
             throw new IllegalArgumentException("Invalid atomic bundle packet count: " + packets.size());
         }
 
         long encodedBytes = BUNDLE_MARKER.length + 1L + MathUtil.varIntSize(packets.size());
+        if (epoch >= 0) {
+            encodedBytes += 1L + MathUtil.varIntSize(epoch);
+        }
         for (ByteBuf packet : packets) {
             final int length = packet.readableBytes();
             if (length <= 0) {
@@ -118,7 +213,13 @@ public final class CausalTransportProtocol {
 
         final ByteBuf out = allocator.buffer((int) encodedBytes, (int) encodedBytes);
         out.writeBytes(BUNDLE_MARKER);
-        out.writeByte(VERSION);
+        if (epoch >= 0) {
+            out.writeByte(EPOCH_FRAME_VERSION);
+            out.writeByte(EPOCH_FRAME_BUNDLE);
+            MathUtil.writeVarInt(out, epoch);
+        } else {
+            out.writeByte(VERSION);
+        }
         MathUtil.writeVarInt(out, packets.size());
         for (ByteBuf packet : packets) {
             MathUtil.writeVarInt(out, packet.readableBytes());
@@ -137,6 +238,37 @@ public final class CausalTransportProtocol {
             throw new CorruptedFrameException("Unsupported atomic bundle version: " + version);
         }
 
+        return decodeBundlePackets(payload);
+    }
+
+    public static int peekGameplayEpoch(ByteBuf payload) {
+        final ByteBuf duplicate = payload.duplicate();
+        requireEpochGameplayFrame(duplicate);
+        duplicate.skipBytes(BUNDLE_MARKER.length + 2);
+        return readNonNegativeVarInt(duplicate, "gameplay epoch");
+    }
+
+    public static GameplayFrame decodeGameplayFrame(ByteBuf payload) {
+        requireEpochGameplayFrame(payload);
+        payload.skipBytes(BUNDLE_MARKER.length);
+        payload.readUnsignedByte(); // version
+        final int type = payload.readUnsignedByte();
+        final int epoch = readNonNegativeVarInt(payload, "gameplay epoch");
+        if (type == EPOCH_FRAME_SINGLE) {
+            if (!payload.isReadable()) {
+                throw new CorruptedFrameException("Empty causal gameplay frame");
+            }
+            final List<ByteBuf> packets = new ArrayList<>(1);
+            packets.add(payload.readRetainedSlice(payload.readableBytes()));
+            return new GameplayFrame(epoch, false, packets);
+        }
+        if (type == EPOCH_FRAME_BUNDLE) {
+            return new GameplayFrame(epoch, true, decodeBundlePackets(payload));
+        }
+        throw new CorruptedFrameException("Unknown causal gameplay frame type: " + type);
+    }
+
+    private static List<ByteBuf> decodeBundlePackets(ByteBuf payload) {
         final int packetCount;
         try {
             packetCount = MathUtil.readVarInt(payload);
@@ -181,7 +313,35 @@ public final class CausalTransportProtocol {
         }
     }
 
+    private static void requireEpochGameplayFrame(ByteBuf payload) {
+        if (!isEpochGameplayFrame(payload)) {
+            throw new CorruptedFrameException("Missing causal gameplay frame marker");
+        }
+    }
+
+    private static int readNonNegativeVarInt(ByteBuf payload, String description) {
+        final int value;
+        try {
+            value = MathUtil.readVarInt(payload);
+        } catch (RuntimeException exception) {
+            throw new CorruptedFrameException("Invalid " + description, exception);
+        }
+        if (value < 0) {
+            throw new CorruptedFrameException("Negative " + description + ": " + value);
+        }
+        return value;
+    }
+
+    private static void requireValidEpoch(int epoch) {
+        if (epoch < 0) {
+            throw new IllegalArgumentException("Negative gameplay epoch: " + epoch);
+        }
+    }
+
     public record Capabilities(int version, long capabilities) {
+    }
+
+    public record GameplayFrame(int epoch, boolean atomicBundle, List<ByteBuf> packets) {
     }
 
 }

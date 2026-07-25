@@ -29,294 +29,345 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
-import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.util.ReferenceCountUtil;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
-import it.unimi.dsi.fastutil.objects.ObjectArrayList;
-import it.unimi.dsi.fastutil.objects.ObjectIterator;
-import it.unimi.dsi.fastutil.objects.Reference2ReferenceLinkedOpenHashMap;
-import it.unimi.dsi.fastutil.objects.ReferenceLinkedOpenHashSet;
-import network.ycc.raknet.frame.Frame;
 import network.ycc.raknet.frame.FrameData;
-import network.ycc.raknet.packet.FrameSet;
-import network.ycc.raknet.packet.FramedPacket;
-import network.ycc.raknet.pipeline.FrameJoiner;
-import network.ycc.raknet.pipeline.FrameOrderIn;
-import network.ycc.raknet.pipeline.FrameOrderOut;
-import network.ycc.raknet.pipeline.ReliabilityHandler;
-import org.apache.commons.math3.util.Pair;
 
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.PriorityQueue;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
 
-import static com.ishland.raknetify.common.util.ReflectionUtil.accessible;
-
+/**
+ * Lossless cross-channel drain fence.
+ *
+ * <p>A request marker is appended to every active ordered channel. The peer
+ * acknowledges only after every marker reaches this handler, proving that all
+ * earlier ordered frames and their fragments were delivered. Later writes stay
+ * queued until that acknowledgement. No reliability queue, order index or
+ * packet promise is deleted or rewritten.</p>
+ */
 public class SynchronizationLayer extends ChannelDuplexHandler {
-
-    // Request structure:
-    // byte: total channel count `n`
-    // next `n` groups: {
-    // byte: channel index
-    // integer: current orderIndex (or lastOrderIndex, (nextOrderIndex - 1))
-    // }
-    // integer: current seqId (or lastReceivedSeqId, (nextSendSeqId - 1))
-    //
-    // Response callback is handled using reliable transport
 
     public static final Object SYNC_REQUEST_OBJECT = new Object();
 
-    static final Class<?> CLASS_QUEUE;
-    static final Class<?> CLASS_FRAME_JOINER_BUILDER;
-    static final Field FIELD_QUEUE_LAST_ORDER_INDEX;
-    static final Method METHOD_QUEUE_BUILDER_RELEASE;
-    static final Method METHOD_QUEUE_CLEAR;
-    static final Field FIELD_RELIABILITY_NEXT_SEND_SEQ_ID;
-    static final Field FIELD_RELIABILITY_LAST_RECEIVED_SEQ_ID;
-    static final Field FIELD_RELIABILITY_QUEUED_BYTES;
-    static final Field FIELD_FRAME_JOINER_BUILDER_SAMPLE_PACKET;
+    private static final int MAX_INBOUND_FENCES = 32;
 
-    static {
-        try {
-            CLASS_QUEUE = Class.forName("network.ycc.raknet.pipeline.FrameOrderIn$OrderedChannelPacketQueue");
-            CLASS_FRAME_JOINER_BUILDER = Class.forName("network.ycc.raknet.pipeline.FrameJoiner$Builder");
+    private final IntSet channelsToIgnore = new IntOpenHashSet();
+    private final Queue<PendingWrite> queuedWrites = new LinkedList<>();
+    private final List<ChannelPromise> activeFencePromises = new ArrayList<>();
+    private final Map<Long, InboundFence> inboundFences = new HashMap<>();
 
-            FIELD_QUEUE_LAST_ORDER_INDEX = accessible(CLASS_QUEUE.getDeclaredField("lastOrderIndex"));
-            FIELD_RELIABILITY_NEXT_SEND_SEQ_ID = accessible(ReliabilityHandler.class.getDeclaredField("nextSendSeqId"));
-            FIELD_RELIABILITY_LAST_RECEIVED_SEQ_ID = accessible(ReliabilityHandler.class.getDeclaredField("lastReceivedSeqId"));
-            FIELD_RELIABILITY_QUEUED_BYTES = accessible(ReliabilityHandler.class.getDeclaredField("queuedBytes"));
-            FIELD_FRAME_JOINER_BUILDER_SAMPLE_PACKET = accessible(CLASS_FRAME_JOINER_BUILDER.getDeclaredField("samplePacket"));
-
-            METHOD_QUEUE_BUILDER_RELEASE = accessible(CLASS_FRAME_JOINER_BUILDER.getDeclaredMethod("release"));
-            METHOD_QUEUE_CLEAR = accessible(CLASS_QUEUE.getDeclaredMethod("clear"));
-
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
-        }
-    }
-
-    private final IntSet channelToIgnore = new IntOpenHashSet();
-
-    private FrameOrderIn frameOrderIn;
-    private Object[] frameOrderInQueues;
-    private FrameOrderOut frameOrderOut;
-    private int[] frameOrderOutNextOrderIndex;
-    private ReliabilityHandler reliabilityHandler;
-    private PriorityQueue<Frame> reliabilityHandlerFrameQueue;
-    private Int2ObjectMap<FrameSet> reliabilityHandlerPendingFrameSets;
-    private FrameJoiner frameJoiner;
-    private Int2ObjectOpenHashMap<?> frameJoinerPendingPackets;
-    private int channelsLength;
-    private boolean initialized = false;
+    private boolean waitingForAck;
+    private long nextFenceId = 1L;
+    private long activeFenceId;
+    private int activeFenceEpoch;
+    private int outboundEpoch;
+    private int inboundEpoch;
+    private long lastCompletedInboundFenceId;
 
     public SynchronizationLayer(int... channelsToIgnore) {
-        for (int ch : channelsToIgnore) {
-            channelToIgnore.add(ch);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    @Override
-    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        super.channelActive(ctx);
-        initializeIfNecessary(ctx);
-    }
-
-    private void initializeIfNecessary(ChannelHandlerContext ctx) {
-        if (initialized) return;
-        try {
-            this.frameOrderIn = ctx.pipeline().get(FrameOrderIn.class);
-            Object frameOrderInQueueArray = accessible(FrameOrderIn.class.getDeclaredField("channels")).get(this.frameOrderIn);
-            this.frameOrderInQueues = new Object[Array.getLength(frameOrderInQueueArray)];
-            for (int i = 0; i < this.frameOrderInQueues.length; i++) {
-                this.frameOrderInQueues[i] = Array.get(frameOrderInQueueArray, i);
+        for (int channel : channelsToIgnore) {
+            if (channel < 0 || channel >= CausalFenceProtocol.ORDER_CHANNEL_COUNT) {
+                throw new IllegalArgumentException("Invalid ignored order channel: " + channel);
             }
-
-            this.frameOrderOut = ctx.pipeline().get(FrameOrderOut.class);
-            this.frameOrderOutNextOrderIndex = (int[]) accessible(FrameOrderOut.class.getDeclaredField("nextOrderIndex")).get(this.frameOrderOut);
-
-            this.reliabilityHandler = ctx.pipeline().get(ReliabilityHandler.class);
-            this.reliabilityHandlerFrameQueue = (PriorityQueue<Frame>) accessible(ReliabilityHandler.class.getDeclaredField("frameQueue")).get(this.reliabilityHandler);
-            this.reliabilityHandlerPendingFrameSets = (Int2ObjectMap<FrameSet>) accessible(ReliabilityHandler.class.getDeclaredField("pendingFrameSets")).get(this.reliabilityHandler);
-
-            int originalChannelsLength = this.frameOrderOutNextOrderIndex.length;
-            //noinspection deprecation
-            this.channelsLength = (int) (originalChannelsLength - this.channelToIgnore.stream().filter(value -> value < originalChannelsLength).count());
-
-            this.frameJoiner = ctx.pipeline().get(FrameJoiner.class);
-            this.frameJoinerPendingPackets = (Int2ObjectOpenHashMap<?>) accessible(FrameJoiner.class.getDeclaredField("pendingPackets")).get(this.frameJoiner);
-
-            initialized = true;
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
+            this.channelsToIgnore.add(channel);
         }
     }
-
-    @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-        initializeIfNecessary(ctx);
-        if (msg instanceof FrameData packet && packet.getPacketId() == Constants.RAKNET_SYNC_PACKET_ID) {
-            // read
-            {
-                if (Constants.DEBUG) System.out.println("Raknetify: Received sync packet");
-                ctx.fireUserEventTriggered(SYNC_REQUEST_OBJECT);
-                final ByteBuf byteBuf = packet.createData().skipBytes(1);
-                try {
-                    final byte count = byteBuf.readByte();
-                    for (int i = 0; i < count; i++) {
-                        final byte channel = byteBuf.readByte();
-                        final int orderIndex = byteBuf.readInt();
-                        if (Constants.DEBUG)
-                            System.out.println("Raknetify: Channel %d: %d -> %d"
-                                    .formatted(channel,
-                                            (int) FIELD_QUEUE_LAST_ORDER_INDEX.get(frameOrderInQueues[channel]),
-                                            orderIndex
-                                    ));
-                        FIELD_QUEUE_LAST_ORDER_INDEX.set(frameOrderInQueues[channel], orderIndex);
-                        final ObjectIterator<?> iterator = this.frameJoinerPendingPackets.values().iterator();
-                        while (iterator.hasNext()) {
-                            final Object next = iterator.next();
-                            try {
-                                final Frame frame = (Frame) FIELD_FRAME_JOINER_BUILDER_SAMPLE_PACKET.get(next);
-                                if (frame.getReliability().isOrdered && frame.getOrderChannel() == channel) {
-                                    METHOD_QUEUE_BUILDER_RELEASE.invoke(next);
-                                    iterator.remove();
-                                }
-                            } catch (IllegalAccessException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    }
-                    final int seqId = byteBuf.readInt();
-                    if (Constants.DEBUG)
-                        System.out.println("Raknetify: ReliabilityHandler: %d -> %d".formatted(
-                                (int) FIELD_RELIABILITY_LAST_RECEIVED_SEQ_ID.get(this.reliabilityHandler),
-                                seqId
-                        ));
-                    FIELD_RELIABILITY_LAST_RECEIVED_SEQ_ID.set(this.reliabilityHandler, seqId);
-                } finally {
-                    byteBuf.release();
-                }
-            }
-            return;
-        }
-        ctx.fireChannelRead(msg);
-    }
-
-    private final ReferenceLinkedOpenHashSet<Pair<ChannelPromise, Object>> queue = new ReferenceLinkedOpenHashSet<>();
-    private final ObjectArrayList<Frame> queuedFrames = new ObjectArrayList<>();
-    private boolean isWaitingForResponse = false;
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        initializeIfNecessary(ctx);
         if (msg == SYNC_REQUEST_OBJECT) {
-            if (isWaitingForResponse) {
-                promise.setSuccess();
+            if (!CausalTransportProtocol.hasCapability(
+                    ctx.channel(),
+                    CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+            )) {
+                // A pre-fence peer cannot acknowledge the new protocol. Preserve
+                // every queued frame and let per-channel ordering continue.
+                promise.trySuccess();
                 return;
             }
-
-            dropSenderPackets();
-
-            final ByteBuf byteBuf = ctx.alloc().buffer(1 + channelsLength * 5 + 4);
-            byteBuf.writeByte(channelsLength);
-            for (int channel = 0, frameOrderOutNextOrderIndexLength = frameOrderOutNextOrderIndex.length; channel < frameOrderOutNextOrderIndexLength; channel++) {
-                if (channelToIgnore.contains(channel)) continue;
-                int orderOutNextOrderIndex = frameOrderOutNextOrderIndex[channel];
-                if (Constants.DEBUG)
-                    System.out.println("Raknetify: Writing sync packet: Channel %d: %d".formatted(channel, orderOutNextOrderIndex - 1));
-                byteBuf.writeByte(channel);
-                byteBuf.writeInt(orderOutNextOrderIndex - 1);
+            if (waitingForAck) {
+                activeFencePromises.add(promise);
+                return;
             }
-            int seqId = (int) FIELD_RELIABILITY_NEXT_SEND_SEQ_ID.get(this.reliabilityHandler); // TODO implementation details (probable lib bug): nextSendSeqId == lastReceivedSeqId
-            if (Constants.DEBUG)
-                System.out.println("Raknetify: Writing sync packet: ReliabilityHandler: %d".formatted(seqId));
-            byteBuf.writeInt(seqId);
-
-            final FrameData frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, byteBuf);
-            frameData.setReliability(FramedPacket.Reliability.RELIABLE);
-            this.isWaitingForResponse = true;
-            ctx.write(frameData).addListener(future -> this.flushQueue(ctx));
-            byteBuf.release();
-            promise.setSuccess();
+            beginFence(ctx, promise);
             return;
         }
-        if (isWaitingForResponse) {
-            this.queue.add(Pair.create(promise, msg));
+        if (waitingForAck) {
+            queuedWrites.add(new PendingWrite(msg, promise));
             return;
         }
         super.write(ctx, msg, promise);
     }
 
-    private void dropSenderPackets() {
-        int droppedFrames = 0;
-
-        ArrayList<Frame> retainedFrameList = new ArrayList<>();
-
-        //noinspection CollectionAddAllCanBeReplacedWithConstructor
-        retainedFrameList.addAll(this.reliabilityHandlerFrameQueue);
-        this.reliabilityHandlerFrameQueue.clear();
-
-        for (FrameSet frameSet : this.reliabilityHandlerPendingFrameSets.values()) {
-            frameSet.createFrames(retainedFrameList::add);
-            frameSet.release();
+    private void beginFence(ChannelHandlerContext ctx, ChannelPromise promise) {
+        if (outboundEpoch == Integer.MAX_VALUE) {
+            final IllegalStateException exception =
+                    new IllegalStateException("Gameplay epoch exhausted");
+            promise.tryFailure(exception);
+            ctx.fireExceptionCaught(exception);
+            return;
         }
-        this.reliabilityHandlerPendingFrameSets.clear();
 
-        int byteSize = 0;
-        for (Iterator<Frame> iterator = retainedFrameList.iterator(); iterator.hasNext(); ) {
-            Frame frame = iterator.next();
-            // Don't drop fragment frames — dropping a single fragment causes the
-            // remote FrameJoiner to hang forever waiting for reassembly, which
-            // eventually triggers the reliable fragment timeout and disconnects the peer.
-            if (frame.getReliability().isOrdered && !channelToIgnore.contains(frame.getOrderChannel()) && !frame.hasSplit()) {
-                final ChannelPromise promise1 = frame.getPromise();
-                if (promise1 != null) promise1.trySuccess();
-                iterator.remove();
-                frame.release();
-                droppedFrames++;
-            } else {
-                byteSize += frame.getRoughPacketSize();
+        int channelMask = 0;
+        for (int channel = 0; channel < CausalFenceProtocol.ORDER_CHANNEL_COUNT; channel++) {
+            if (!channelsToIgnore.contains(channel)) {
+                channelMask |= 1 << channel;
             }
         }
-        this.queuedFrames.addAll(retainedFrameList);
-
-        if (Constants.DEBUG) System.out.println("Raknetify: Dropping %d frames".formatted(droppedFrames));
-        try {
-            FIELD_RELIABILITY_QUEUED_BYTES.set(this.reliabilityHandler, byteSize);
-        } catch (Throwable t) {
-            throw new RuntimeException(t);
+        if (channelMask == 0) {
+            final IllegalStateException exception =
+                    new IllegalStateException("Causal fence has no active channels");
+            promise.tryFailure(exception);
+            ctx.fireExceptionCaught(exception);
+            return;
         }
 
-        this.reliabilityHandlerPendingFrameSets.clear();
+        waitingForAck = true;
+        activeFenceId = nextFenceId++;
+        activeFenceEpoch = outboundEpoch + 1;
+        activeFencePromises.add(promise);
+
+        for (int channel = 0; channel < CausalFenceProtocol.ORDER_CHANNEL_COUNT; channel++) {
+            if ((channelMask & 1 << channel) == 0) {
+                continue;
+            }
+            writeFenceRequest(ctx, activeFenceId, activeFenceEpoch, channelMask, channel);
+        }
     }
 
-    private void flushQueue(ChannelHandlerContext ctx) {
-        if (!isWaitingForResponse) {
-            if (Constants.DEBUG) System.out.println("Raknetify: Ignoring duplicate call to flushQueue()");
+    private void writeFenceRequest(
+            ChannelHandlerContext ctx,
+            long fenceId,
+            int epoch,
+            int channelMask,
+            int channel
+    ) {
+        final ByteBuf payload = CausalFenceProtocol.encodeRequest(
+                ctx.alloc(),
+                fenceId,
+                epoch,
+                channelMask
+        );
+        FrameData frameData = null;
+        try {
+            frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, payload);
+            frameData.setOrderChannel(channel);
+            ctx.write(frameData).addListener(future -> {
+                if (!future.isSuccess()) {
+                    failActiveFence(ctx, future.cause());
+                }
+            });
+            frameData = null;
+        } finally {
+            payload.release();
+            ReferenceCountUtil.safeRelease(frameData);
+        }
+    }
+
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (!(msg instanceof FrameData packet)
+                || packet.isFragment()
+                || packet.getDataSize() <= 0
+                || packet.getPacketId() != Constants.RAKNET_SYNC_PACKET_ID) {
+            super.channelRead(ctx, msg);
             return;
         }
+
+        try {
+            if (!CausalTransportProtocol.hasCapability(
+                    ctx.channel(),
+                    CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+            )) {
+                return;
+            }
+            final ByteBuf payload = packet.createData().skipBytes(1);
+            try {
+                final CausalFenceProtocol.Message message = CausalFenceProtocol.decode(payload);
+                if (message instanceof CausalFenceProtocol.Request request) {
+                    handleFenceRequest(ctx, packet, request);
+                } else if (message instanceof CausalFenceProtocol.Ack ack) {
+                    handleFenceAck(ctx, packet, ack);
+                }
+            } finally {
+                payload.release();
+            }
+        } finally {
+            packet.release();
+        }
+    }
+
+    private void handleFenceRequest(
+            ChannelHandlerContext ctx,
+            FrameData packet,
+            CausalFenceProtocol.Request request
+    ) {
+        requireReliableOrdered(packet, "request");
+        final int channel = packet.getOrderChannel();
+        if ((request.channelMask() & 1 << channel) == 0) {
+            throw new CorruptedFrameException("Fence request arrived on an unexpected channel");
+        }
+
+        if (request.fenceId() == lastCompletedInboundFenceId
+                && request.epoch() == inboundEpoch) {
+            writeFenceAck(ctx, request.fenceId(), request.epoch());
+            return;
+        }
+        if (request.fenceId() < lastCompletedInboundFenceId) {
+            return;
+        }
+
+        InboundFence fence = inboundFences.get(request.fenceId());
+        if (fence == null) {
+            if (inboundFences.size() >= MAX_INBOUND_FENCES) {
+                throw new CorruptedFrameException("Too many incomplete causal fences");
+            }
+            if (request.epoch() != inboundEpoch + 1) {
+                throw new CorruptedFrameException("Unexpected inbound gameplay epoch "
+                        + request.epoch() + ", expected " + (inboundEpoch + 1));
+            }
+            fence = new InboundFence(request.epoch(), request.channelMask());
+            inboundFences.put(request.fenceId(), fence);
+        } else if (fence.epoch != request.epoch()
+                || fence.channelMask != request.channelMask()) {
+            throw new CorruptedFrameException("Inconsistent causal fence request");
+        }
+
+        fence.seenMask |= 1 << channel;
+        if (fence.seenMask == fence.channelMask) {
+            inboundFences.remove(request.fenceId());
+            inboundEpoch = fence.epoch;
+            lastCompletedInboundFenceId = request.fenceId();
+            ctx.fireUserEventTriggered(new InboundEpochAdvanced(inboundEpoch));
+            writeFenceAck(ctx, request.fenceId(), inboundEpoch);
+        }
+    }
+
+    private void writeFenceAck(ChannelHandlerContext ctx, long fenceId, int epoch) {
+        final ByteBuf payload = CausalFenceProtocol.encodeAck(ctx.alloc(), fenceId, epoch);
+        FrameData frameData = null;
+        try {
+            frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, payload);
+            frameData.setOrderChannel(7);
+            ctx.write(frameData).addListener(future -> {
+                if (!future.isSuccess()) {
+                    ctx.fireExceptionCaught(future.cause());
+                }
+            });
+            frameData = null;
+        } finally {
+            payload.release();
+            ReferenceCountUtil.safeRelease(frameData);
+        }
+    }
+
+    private void handleFenceAck(
+            ChannelHandlerContext ctx,
+            FrameData packet,
+            CausalFenceProtocol.Ack ack
+    ) {
+        requireReliableOrdered(packet, "ack");
+        if (packet.getOrderChannel() != 7) {
+            throw new CorruptedFrameException("Causal fence ACK must use channel 7");
+        }
+        if (!waitingForAck || ack.fenceId() < activeFenceId) {
+            return;
+        }
+        if (ack.fenceId() != activeFenceId || ack.epoch() != activeFenceEpoch) {
+            throw new CorruptedFrameException("Unexpected causal fence ACK");
+        }
+
+        waitingForAck = false;
+        outboundEpoch = activeFenceEpoch;
+        flushQueuedWrites(ctx);
+        ctx.fireUserEventTriggered(new OutboundEpochAdvanced(outboundEpoch));
+        activeFencePromises.forEach(ChannelPromise::trySuccess);
+        activeFencePromises.clear();
+        activeFenceId = 0L;
+        activeFenceEpoch = 0;
+    }
+
+    private static void requireReliableOrdered(FrameData packet, String description) {
+        if (!packet.getReliability().isReliable
+                || !packet.getReliability().isOrdered
+                || packet.getReliability().isSequenced) {
+            throw new CorruptedFrameException("Causal fence " + description
+                    + " is not reliable ordered");
+        }
+    }
+
+    private void flushQueuedWrites(ChannelHandlerContext ctx) {
+        PendingWrite pendingWrite;
+        while ((pendingWrite = queuedWrites.poll()) != null) {
+            try {
+                ctx.write(pendingWrite.message, pendingWrite.promise);
+            } catch (Throwable throwable) {
+                pendingWrite.promise.tryFailure(throwable);
+                ReferenceCountUtil.safeRelease(pendingWrite.message);
+                failQueuedWrites(throwable);
+                ctx.fireExceptionCaught(throwable);
+                return;
+            }
+        }
+    }
+
+    private void failActiveFence(ChannelHandlerContext ctx, Throwable cause) {
         if (!ctx.channel().eventLoop().inEventLoop()) {
-            ctx.channel().eventLoop().execute(() -> flushQueue(ctx));
+            ctx.channel().eventLoop().execute(() -> failActiveFence(ctx, cause));
             return;
         }
+        if (!waitingForAck) {
+            return;
+        }
+        waitingForAck = false;
+        activeFencePromises.forEach(promise -> promise.tryFailure(cause));
+        activeFencePromises.clear();
+        failQueuedWrites(cause);
+        ctx.fireExceptionCaught(cause);
+        ctx.close();
+    }
 
-        this.isWaitingForResponse = false;
+    private void failQueuedWrites(Throwable cause) {
+        PendingWrite pendingWrite;
+        while ((pendingWrite = queuedWrites.poll()) != null) {
+            pendingWrite.promise.tryFailure(cause);
+            ReferenceCountUtil.safeRelease(pendingWrite.message);
+        }
+    }
 
-        if (Constants.DEBUG) System.out.println("Raknetify: Picking up %d queued frames".formatted(this.queuedFrames.size()));
-        this.reliabilityHandlerFrameQueue.addAll(this.queuedFrames);
-        this.queuedFrames.clear();
+    @Override
+    public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+        final IllegalStateException cause = new IllegalStateException("Channel closed");
+        activeFencePromises.forEach(promise -> promise.tryFailure(cause));
+        activeFencePromises.clear();
+        failQueuedWrites(cause);
+        inboundFences.clear();
+        super.handlerRemoved(ctx);
+    }
 
-        if (Constants.DEBUG) System.out.println("Raknetify: Flushing %d queued packets as synchronization finished".formatted(this.queue.size()));
-        while (!this.queue.isEmpty()) {
-            Pair<ChannelPromise, Object> pair = this.queue.removeFirst();
-            final ChannelPromise promise = pair.getFirst();
-            final Object msg = pair.getSecond();
-            ctx.write(msg, promise);
+    public record InboundEpochAdvanced(int epoch) {
+    }
+
+    public record OutboundEpochAdvanced(int epoch) {
+    }
+
+    private record PendingWrite(Object message, ChannelPromise promise) {
+    }
+
+    private static final class InboundFence {
+        private final int epoch;
+        private final int channelMask;
+        private int seenMask;
+
+        private InboundFence(int epoch, int channelMask) {
+            this.epoch = epoch;
+            this.channelMask = channelMask;
         }
     }
 

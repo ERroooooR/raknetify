@@ -29,6 +29,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.util.ReferenceCountUtil;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
@@ -120,7 +121,7 @@ class RakNetSimpleMultiChannelCodecTest {
         assertEquals(7, envelope.getOrderChannel());
         final ByteBuf encodedEnvelope = envelope.createData().skipBytes(1);
         try {
-            assertTrue(CausalTransportProtocol.isAtomicBundle(encodedEnvelope));
+            assertTrue(CausalTransportProtocol.isEpochAtomicBundle(encodedEnvelope));
         } finally {
             encodedEnvelope.release();
         }
@@ -131,6 +132,107 @@ class RakNetSimpleMultiChannelCodecTest {
         assertPacket(channel.readInbound(), 0);
         assertNull(channel.readInbound());
         assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void futureEpochWaitsForItsFenceEvent() {
+        final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ByteBuf original = Unpooled.wrappedBuffer(new byte[]{3, 7});
+        final ByteBuf encoded = CausalTransportProtocol.encodeGameplayFrame(
+                channel.alloc(),
+                1,
+                original
+        );
+        original.release();
+        final FrameData futureFrame;
+        try {
+            futureFrame = FrameData.create(channel.alloc(), 0xfd, encoded);
+            futureFrame.setOrderChannel(7);
+        } finally {
+            encoded.release();
+        }
+
+        assertFalse(channel.writeInbound(futureFrame));
+        assertNull(channel.readInbound());
+        channel.pipeline().fireUserEventTriggered(
+                new SynchronizationLayer.InboundEpochAdvanced(1)
+        );
+        channel.runPendingTasks();
+        assertPacket(channel.readInbound(), 3, 7);
+        assertNull(channel.readInbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void outboundFramesAdvanceEpochAndStaleInboundFramesAreDropped() {
+        final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        channel.pipeline().fireUserEventTriggered(
+                new SynchronizationLayer.OutboundEpochAdvanced(1)
+        );
+        assertTrue(channel.writeOutbound(Unpooled.wrappedBuffer(new byte[]{4, 8})));
+        final FrameData outbound = channel.readOutbound();
+        final ByteBuf outboundPayload = outbound.createData().skipBytes(1);
+        try {
+            assertTrue(CausalTransportProtocol.isEpochGameplayFrame(outboundPayload));
+            assertEquals(1, CausalTransportProtocol.peekGameplayEpoch(outboundPayload));
+        } finally {
+            outboundPayload.release();
+            outbound.release();
+        }
+
+        channel.pipeline().fireUserEventTriggered(
+                new SynchronizationLayer.InboundEpochAdvanced(1)
+        );
+        final ByteBuf stalePacket = Unpooled.wrappedBuffer(new byte[]{6});
+        final ByteBuf stalePayload = CausalTransportProtocol.encodeGameplayFrame(
+                channel.alloc(),
+                0,
+                stalePacket
+        );
+        stalePacket.release();
+        final FrameData staleFrame;
+        try {
+            staleFrame = FrameData.create(channel.alloc(), 0xfd, stalePayload);
+            staleFrame.setOrderChannel(7);
+        } finally {
+            stalePayload.release();
+        }
+        assertFalse(channel.writeInbound(staleFrame));
+        assertNull(channel.readInbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    private static void negotiateCausalCapabilities(EmbeddedChannel channel) {
+        assertTrue(channel.writeOutbound(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL));
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+
+        final ByteBuf capabilityPayload = CausalTransportProtocol.encodeCapabilities(
+                channel.alloc(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        final FrameData remoteCapabilities;
+        try {
+            remoteCapabilities = FrameData.create(
+                    channel.alloc(),
+                    Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID,
+                    capabilityPayload
+            );
+            remoteCapabilities.setOrderChannel(7);
+        } finally {
+            capabilityPayload.release();
+        }
+        assertFalse(channel.writeInbound(remoteCapabilities));
     }
 
     private static void assertPacket(ByteBuf packet, int... expected) {

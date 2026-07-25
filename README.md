@@ -128,8 +128,15 @@ may overtake the entity, world or inventory state they reference. It remains on 
 until both peers negotiate atomic-bundle support; an older peer therefore cannot accidentally
 enable the unsafe delimiter-dropping behavior. Negotiated bundles are sent as one logical game
 frame and reconstructed synchronously on receipt, while still using RakNet compression,
-fragmentation and recovery. Future causal-domain and epoch support will selectively reopen
-independent channels without requiring per-mod compatibility IDs.
+fragmentation and recovery.
+
+Dimension and backend transitions use a negotiated lossless drain fence. Raknetify appends a
+reliable marker to every ordered channel, holds later writes until the peer has received all
+markers, then advances a gameplay epoch. Old-epoch frames are discarded and future-epoch frames
+wait behind the transition gate. This replaces the previous queue deletion and order-index rewrite
+behavior; reliable packet promises are never reported successful merely because a transition
+occurred. Future dependency-domain support will selectively reopen only proven-independent
+channels without requiring per-mod compatibility IDs.
 
 ## BandwidthOptimizer compatibility
 

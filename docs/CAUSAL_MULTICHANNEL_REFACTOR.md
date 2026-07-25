@@ -17,7 +17,7 @@ Current implementation status:
 
 - Stage 1: implemented.
 - Stage 2: implemented with application-level capability negotiation and bounded envelopes.
-- Stage 3: pending.
+- Stage 3: implemented with per-channel drain markers, acknowledgements and gameplay epochs.
 - Stage 4: pending.
 
 ## Stage 1: strict causal stream
@@ -53,6 +53,13 @@ delimiter and be consumed as part of the wrong bundle.
 - Add a negotiated gameplay epoch to Raknetify framing.
 - Increment the epoch for join, respawn and reconfiguration transitions.
 - Reject stale old-epoch frames and hold new-epoch state until its transition gate is committed.
+
+The sender now appends a reliable ordered marker to all eight order channels and retains every
+later message and promise until the receiver acknowledges all markers. The receiver advances the
+epoch before sending that acknowledgement, so newly released frames cannot reach Minecraft before
+the gate. The legacy reflection path that cleared `ReliabilityHandler` queues, rewrote receive
+indices and completed dropped frame promises has been removed. Peers without the negotiated fence
+capability keep their existing ordered traffic instead of invoking that lossy fallback.
 
 ## Stage 4: dependency domains
 

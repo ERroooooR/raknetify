@@ -55,6 +55,23 @@ class CausalTransportProtocolTest {
     }
 
     @Test
+    void gameplayEpochRequiresBothAtomicBundlesAndLosslessFences() {
+        assertEquals(
+                CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE,
+                CausalTransportProtocol.negotiateCapabilities(
+                        CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
+                                | CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH
+                )
+        );
+        assertEquals(
+                CausalTransportProtocol.LOCAL_CAPABILITIES,
+                CausalTransportProtocol.negotiateCapabilities(
+                        CausalTransportProtocol.LOCAL_CAPABILITIES
+                )
+        );
+    }
+
+    @Test
     void atomicBundleRoundTripPreservesEveryPacket() {
         final List<ByteBuf> source = List.of(
                 Unpooled.wrappedBuffer(new byte[]{0}),
@@ -101,6 +118,56 @@ class CausalTransportProtocolTest {
         } finally {
             encoded.release();
             source.forEach(ByteBuf::release);
+        }
+    }
+
+    @Test
+    void epochGameplayFramesPreserveSinglePacketsAndBundles() {
+        final ByteBuf singlePacket = Unpooled.wrappedBuffer(new byte[]{5, 6});
+        final ByteBuf encodedSingle = CausalTransportProtocol.encodeGameplayFrame(
+                UnpooledByteBufAllocator.DEFAULT,
+                3,
+                singlePacket
+        );
+        try {
+            assertTrue(CausalTransportProtocol.isEpochGameplayFrame(encodedSingle));
+            assertEquals(3, CausalTransportProtocol.peekGameplayEpoch(encodedSingle));
+            final var decoded = CausalTransportProtocol.decodeGameplayFrame(encodedSingle);
+            try {
+                assertEquals(3, decoded.epoch());
+                assertEquals(false, decoded.atomicBundle());
+                assertArrayEquals(new byte[]{5, 6}, bytes(decoded.packets().get(0)));
+            } finally {
+                decoded.packets().forEach(ByteBuf::release);
+            }
+        } finally {
+            encodedSingle.release();
+            singlePacket.release();
+        }
+
+        final List<ByteBuf> bundlePackets = List.of(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                Unpooled.wrappedBuffer(new byte[]{9}),
+                Unpooled.wrappedBuffer(new byte[]{0})
+        );
+        final ByteBuf encodedBundle = CausalTransportProtocol.encodeAtomicBundle(
+                UnpooledByteBufAllocator.DEFAULT,
+                4,
+                bundlePackets
+        );
+        try {
+            assertTrue(CausalTransportProtocol.isEpochAtomicBundle(encodedBundle));
+            final var decoded = CausalTransportProtocol.decodeGameplayFrame(encodedBundle);
+            try {
+                assertEquals(4, decoded.epoch());
+                assertEquals(true, decoded.atomicBundle());
+                assertEquals(3, decoded.packets().size());
+            } finally {
+                decoded.packets().forEach(ByteBuf::release);
+            }
+        } finally {
+            encodedBundle.release();
+            bundlePackets.forEach(ByteBuf::release);
         }
     }
 
