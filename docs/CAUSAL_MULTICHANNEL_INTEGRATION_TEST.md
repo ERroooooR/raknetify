@@ -35,7 +35,14 @@ python scripts/prepare_causal_testbed.py `
   --server-template D:\path\to\neoforge-server `
   --client-mods D:\path\to\affected-client\mods `
   --raknetify-jar $raknetifyFabric.FullName `
-  --output build\causal-testbed\server
+  --output build\causal-testbed\server-a `
+  --port 25576
+python scripts/prepare_causal_testbed.py `
+  --server-template D:\path\to\neoforge-server `
+  --client-mods D:\path\to\affected-client\mods `
+  --raknetify-jar $raknetifyFabric.FullName `
+  --output build\causal-testbed\server-b `
+  --port 25579
 ```
 
 By default it selects Connector, Forgified Fabric API, Connector Extras, BandwidthOptimizer,
@@ -63,12 +70,16 @@ python scripts/prepare_causal_proxies.py `
   --velocity-plugin $raknetifyVelocity.FullName `
   --bungee-jar D:\path\to\bungeecord.jar `
   --bungee-plugin $raknetifyBungee.FullName `
-  --output build\causal-testbed\proxies
+  --output build\causal-testbed\proxies `
+  --backend causal_a=127.0.0.1:25576 `
+  --backend causal_b=127.0.0.1:25579
 ```
 
 The generated proxies bind only to `127.0.0.1` on ports `25577` and `25578`, route to the direct
-server on `25576`, and use the same protocol/metrics baseline. Their sentinel records SHA-256
-hashes for both proxy distributions and both Raknetify plugins.
+servers on `25576`/`25579`, and use the same protocol/metrics baseline. Their sentinel records
+SHA-256 hashes for both proxy distributions and both Raknetify plugins. Velocity and Bungee expose
+the backends as `causal_a` and `causal_b`; use `/server causal_a` and `/server causal_b` while
+running the proxy-switch portion of the matrix.
 
 ## Network fault profile
 

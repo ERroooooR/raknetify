@@ -36,20 +36,32 @@ class PrepareCausalProxiesTest(unittest.TestCase):
                 artifacts["bungee.jar"],
                 artifacts["bungee-plugin.jar"],
                 output,
-                "127.0.0.1:25576",
+                {
+                    "causal_a": "127.0.0.1:25576",
+                    "causal_b": "127.0.0.1:25579",
+                },
                 25577,
                 25578,
             )
 
-            self.assertEqual("127.0.0.1:25576", manifest["backend"])
+            self.assertEqual(
+                {
+                    "causal_a": "127.0.0.1:25576",
+                    "causal_b": "127.0.0.1:25579",
+                },
+                manifest["backends"],
+            )
             self.assertTrue((output / "velocity" / "plugins" / "raknetify.jar").is_file())
             self.assertTrue((output / "bungee" / "plugins" / "raknetify.jar").is_file())
             velocity = (output / "velocity" / "velocity.toml").read_text()
             self.assertIn('bind = "127.0.0.1:25577"', velocity)
-            self.assertIn('causal = "127.0.0.1:25576"', velocity)
+            self.assertIn('causal_a = "127.0.0.1:25576"', velocity)
+            self.assertIn('causal_b = "127.0.0.1:25579"', velocity)
+            self.assertIn('try = ["causal_a"]', velocity)
             bungee = (output / "bungee" / "config.yml").read_text()
             self.assertIn("host: 127.0.0.1:25578", bungee)
             self.assertIn("address: 127.0.0.1:25576", bungee)
+            self.assertIn("address: 127.0.0.1:25579", bungee)
             for proxy in ("velocity", "bungee"):
                 run_file = (output / proxy / "run-causal-proxy.bat").read_text()
                 self.assertIn("-Draknetify.metricsJsonl=true", run_file)
@@ -73,7 +85,7 @@ class PrepareCausalProxiesTest(unittest.TestCase):
                     artifact,
                     artifact,
                     output,
-                    "127.0.0.1:25576",
+                    {"causal": "127.0.0.1:25576"},
                     25577,
                     25578,
                     replace=True,

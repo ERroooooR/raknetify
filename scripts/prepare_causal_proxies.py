@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -31,7 +32,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bungee-jar", required=True, type=Path)
     parser.add_argument("--bungee-plugin", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--backend", default="127.0.0.1:25576")
+    parser.add_argument(
+        "--backend",
+        action="append",
+        default=[],
+        metavar="NAME=HOST:PORT",
+        help=(
+            "named backend; repeat for server-switch tests "
+            "(default: causal=127.0.0.1:25576)"
+        ),
+    )
     parser.add_argument("--velocity-port", type=int, default=25577)
     parser.add_argument("--bungee-port", type=int, default=25578)
     parser.add_argument(
@@ -82,7 +92,42 @@ def prepare_destination(output: Path, replace: bool) -> Path:
     return destination
 
 
-def velocity_config(backend: str, port: int) -> str:
+def parse_backends(specifications: list[str]) -> dict[str, str]:
+    if not specifications:
+        return {"causal": "127.0.0.1:25576"}
+    backends: dict[str, str] = {}
+    for specification in specifications:
+        if "=" not in specification:
+            raise ProxyTestbedError(
+                f"backend must be NAME=HOST:PORT: {specification}"
+            )
+        name, address = specification.split("=", 1)
+        if not re.fullmatch(r"[a-z0-9_-]+", name):
+            raise ProxyTestbedError(
+                f"backend name must match [a-z0-9_-]+: {name}"
+            )
+        if ":" not in address:
+            raise ProxyTestbedError(
+                f"backend address must be HOST:PORT: {address}"
+            )
+        try:
+            backend_port = int(address.rsplit(":", 1)[1])
+        except ValueError as exc:
+            raise ProxyTestbedError(
+                f"backend address has invalid port: {address}"
+            ) from exc
+        checked_port(backend_port, f"backend {name} port")
+        if name in backends:
+            raise ProxyTestbedError(f"duplicate backend name: {name}")
+        backends[name] = address
+    return backends
+
+
+def velocity_config(backends: dict[str, str], port: int) -> str:
+    server_lines = "\n".join(
+        f'{name} = "{address}"' for name, address in backends.items()
+    )
+    first_backend = next(iter(backends))
     return f"""\
 config-version = "2.7"
 bind = "127.0.0.1:{port}"
@@ -100,8 +145,8 @@ sample-players-in-ping = false
 enable-player-address-logging = true
 
 [servers]
-causal = "{backend}"
-try = ["causal"]
+{server_lines}
+try = ["{first_backend}"]
 
 [forced-hosts]
 
@@ -135,7 +180,15 @@ show-plugins = false
 """
 
 
-def bungee_config(backend: str, port: int) -> str:
+def bungee_config(backends: dict[str, str], port: int) -> str:
+    first_backend = next(iter(backends))
+    server_lines = "\n".join(
+        f"  {name}:\n"
+        "    motd: '&bCausal backend'\n"
+        f"    address: {address}\n"
+        "    restricted: false"
+        for name, address in backends.items()
+    )
     return f"""\
 server_connect_timeout: 5000
 listeners:
@@ -147,7 +200,7 @@ listeners:
   forced_hosts: {{}}
   ping_passthrough: true
   priorities:
-  - causal
+  - {first_backend}
   bind_local_address: true
   host: 127.0.0.1:{port}
   max_players: 20
@@ -171,10 +224,7 @@ online_mode: false
 forge_support: true
 disabled_commands: []
 servers:
-  causal:
-    motd: '&bCausal backend'
-    address: {backend}
-    restricted: false
+{server_lines}
 reject_transfers: false
 """
 
@@ -209,7 +259,7 @@ def prepare_proxies(
     bungee_jar: Path,
     bungee_plugin: Path,
     output: Path,
-    backend: str,
+    backends: dict[str, str],
     velocity_port: int,
     bungee_port: int,
     *,
@@ -225,8 +275,13 @@ def prepare_proxies(
     bungee_port = checked_port(bungee_port, "Bungee port")
     if velocity_port == bungee_port:
         raise ProxyTestbedError("Velocity and Bungee ports must differ")
-    if ":" not in backend:
-        raise ProxyTestbedError(f"backend must be host:port: {backend}")
+    if not backends:
+        raise ProxyTestbedError("at least one backend is required")
+    # Re-parse the mapping through the CLI validator so API callers receive
+    # the same name/address checks as command-line callers.
+    backends = parse_backends(
+        [f"{name}={address}" for name, address in backends.items()]
+    )
 
     destination = prepare_destination(output, replace)
     velocity = destination / "velocity"
@@ -249,13 +304,13 @@ def prepare_proxies(
         ),
     }
     (velocity / "velocity.toml").write_text(
-        velocity_config(backend, velocity_port), encoding="utf-8"
+        velocity_config(backends, velocity_port), encoding="utf-8"
     )
     (velocity / "forwarding.secret").write_text(
         "unused-in-none-mode\n", encoding="utf-8"
     )
     (bungee / "config.yml").write_text(
-        bungee_config(backend, bungee_port), encoding="utf-8"
+        bungee_config(backends, bungee_port), encoding="utf-8"
     )
     jvm_arguments = {
         "velocity": write_run_file(velocity, "velocity.jar"),
@@ -263,7 +318,7 @@ def prepare_proxies(
     }
     manifest = {
         "format": 1,
-        "backend": backend,
+        "backends": backends,
         "ports": {
             "velocity": velocity_port,
             "bungee": bungee_port,
@@ -281,13 +336,14 @@ def prepare_proxies(
 def main() -> int:
     args = parse_args()
     try:
+        backends = parse_backends(args.backend)
         manifest = prepare_proxies(
             args.velocity_jar,
             args.velocity_plugin,
             args.bungee_jar,
             args.bungee_plugin,
             args.output,
-            args.backend,
+            backends,
             args.velocity_port,
             args.bungee_port,
             replace=args.replace,
@@ -298,9 +354,12 @@ def main() -> int:
     print(f"Prepared causal proxies: {args.output.resolve()}")
     print(
         "Velocity 127.0.0.1:{velocity}, Bungee 127.0.0.1:{bungee}, "
-        "backend {backend}".format(
+        "backends {backends}".format(
             **manifest["ports"],
-            backend=manifest["backend"],
+            backends=", ".join(
+                f"{name}={address}"
+                for name, address in manifest["backends"].items()
+            ),
         )
     )
     return 0
