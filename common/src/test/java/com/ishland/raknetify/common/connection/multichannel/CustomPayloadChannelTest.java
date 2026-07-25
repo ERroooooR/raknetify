@@ -37,7 +37,7 @@ class CustomPayloadChannelTest {
     private static final int CUSTOM_PAYLOAD_PACKET_ID = 42;
 
     @Test
-    void neoforgeComplexEntitySpawnDataSharesTheEntityChannel() {
+    void neoforgeComplexEntitySpawnDataUsesTheStrictDomain() {
         final CustomPayloadChannel.OverrideHandler handler =
                 new CustomPayloadChannel.OverrideHandler(id -> id == CUSTOM_PAYLOAD_PACKET_ID);
         final ByteBuf packet = customPayloadPacket("neoforge:advanced_add_entity");
@@ -45,21 +45,24 @@ class CustomPayloadChannelTest {
         try {
             final var result = handler.getChannelOverride(packet, true);
             assertEquals(true, result.matched());
-            assertEquals(2, result.channel());
+            assertEquals(7, result.channel());
+            assertEquals(DependencyDomain.STRICT_WORLD, result.domain());
         } finally {
             packet.release();
         }
     }
 
     @Test
-    void unrelatedCustomPayloadKeepsTheDefaultClassification() {
+    void unrelatedCustomPayloadUsesTheStrictDomain() {
         final CustomPayloadChannel.OverrideHandler handler =
                 new CustomPayloadChannel.OverrideHandler(id -> id == CUSTOM_PAYLOAD_PACKET_ID);
         final ByteBuf packet = customPayloadPacket("example:unrelated");
 
         try {
             final var result = handler.getChannelOverride(packet, true);
-            assertEquals(false, result.matched());
+            assertEquals(true, result.matched());
+            assertEquals(7, result.channel());
+            assertEquals(DependencyDomain.STRICT_WORLD, result.domain());
         } finally {
             packet.release();
         }

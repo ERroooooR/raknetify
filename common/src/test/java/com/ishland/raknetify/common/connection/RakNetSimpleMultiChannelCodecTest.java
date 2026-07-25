@@ -70,6 +70,59 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
+    void compatibilityProfileOpensOnlyExplicitSafeLegacyDomains() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(-1));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        assertTrue(channel.writeOutbound(Unpooled.wrappedBuffer(new byte[]{1})));
+        final FrameData frame = channel.readOutbound();
+        assertEquals(1, frame.getOrderChannel());
+        assertTrue(frame.getReliability().isOrdered);
+        frame.release();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void unknownPacketsRemainOnStrictChannelAfterNegotiation() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.pass());
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        assertTrue(channel.writeOutbound(Unpooled.wrappedBuffer(new byte[]{1})));
+        final FrameData frame = channel.readOutbound();
+        assertEquals(7, frame.getOrderChannel());
+        frame.release();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void removingCodecFailsAnUndrainedScheduledWrite() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(-1));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ChannelPromise promise = channel.newPromise();
+        channel.pipeline().write(Unpooled.wrappedBuffer(new byte[]{1}), promise);
+        assertFalse(promise.isDone());
+        channel.pipeline().remove(codec);
+
+        assertTrue(promise.isDone());
+        assertFalse(promise.isSuccess());
+        channel.runPendingTasks();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
     void negotiatedBundleIsOneFrameAndIsReconstructedSynchronously() {
         final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
         codec.addHandler((buf, suppressWarning) -> buf.getUnsignedByte(buf.readerIndex()) == 0

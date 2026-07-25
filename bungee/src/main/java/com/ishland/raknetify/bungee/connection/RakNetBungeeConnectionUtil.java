@@ -31,7 +31,6 @@ import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
-import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
@@ -75,9 +74,6 @@ public class RakNetBungeeConnectionUtil {
             RakNetConnectionUtil.initChannel(channel);
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
-            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler(
-                    multiChannelCodec::isAtomicBundleEnabled
-            ));
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }

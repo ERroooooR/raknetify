@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -64,6 +65,8 @@ class SimpleMetricsLoggerTest {
         logger.orderedQueuePending(3, 6_000_000L);
         logger.orderedQueueRelease(4, 9_000_000L);
         logger.applicationBatch(32768);
+        logger.dependencyDomainQueued(DependencyDomain.GUARDED_BULK, 8192);
+        logger.dependencyDomainSent(DependencyDomain.GUARDED_BULK, 8192);
         logger.ackRepeated(3);
         logger.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
         logger.adaptiveDemand(false, "BULK", 150_000_000L, 4L);
@@ -123,6 +126,9 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ordered_pending_frames\":3"));
         assertTrue(line.contains("\"application_batches\":1"));
         assertTrue(line.contains("\"application_batch_max_bytes\":32768"));
+        assertTrue(line.contains("\"dependency_domain_queued_frames\":[0, 0, 0, 1]"));
+        assertTrue(line.contains("\"dependency_domain_sent_bytes\":[0, 0, 0, 8192]"));
+        assertTrue(line.contains("\"dependency_domain_pending_frames\":[0, 0, 0, 0]"));
         assertTrue(line.contains("\"ack_repeated_packets\":1"));
         assertTrue(line.contains("\"ack_repeated_framesets\":3"));
         assertTrue(line.contains("\"ack_protection\":true"));

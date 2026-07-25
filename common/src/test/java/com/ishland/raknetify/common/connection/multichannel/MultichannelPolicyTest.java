@@ -24,48 +24,66 @@
 
 package com.ishland.raknetify.common.connection.multichannel;
 
-import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MultichannelPolicyTest {
 
     @Test
-    void compatibilityProfileForcesEveryGamePacketOntoTheCausalStream() {
-        final var handler = MultichannelPolicy.profileHandler(MultichannelPolicy.Profile.COMPATIBILITY);
-        final var result = handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true);
-
-        assertTrue(result.matched());
-        assertEquals(MultichannelPolicy.STRICT_GAME_CHANNEL, result.channel());
+    void compatibilityProfileOnlyOpensExplicitIndependentDomains() {
+        assertEquals(7, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.COMPATIBILITY,
+                DependencyDomain.STRICT_WORLD,
+                2,
+                true
+        ));
+        assertEquals(7, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.COMPATIBILITY,
+                DependencyDomain.GUARDED_BULK,
+                7,
+                true
+        ));
+        assertEquals(1, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.COMPATIBILITY,
+                DependencyDomain.INDEPENDENT_CONTROL,
+                -1,
+                true
+        ));
+        assertEquals(4, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.COMPATIBILITY,
+                DependencyDomain.EPHEMERAL_EFFECT,
+                4,
+                true
+        ));
     }
 
     @Test
-    void aggressiveProfileFallsThroughToLegacyClassification() {
-        final var handler = MultichannelPolicy.profileHandler(MultichannelPolicy.Profile.AGGRESSIVE);
-        final var result = handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true);
-
-        assertFalse(result.matched());
-    }
-
-    @Test
-    void aggressiveProfileStaysStrictUntilAtomicBundlesAreReady() {
-        final AtomicBoolean ready = new AtomicBoolean();
-        final var handler = MultichannelPolicy.profileHandler(
+    void aggressiveProfileRetainsLegacyChannelForComparison() {
+        assertEquals(-1, MultichannelPolicy.selectChannel(
                 MultichannelPolicy.Profile.AGGRESSIVE,
-                ready::get
-        );
+                DependencyDomain.INDEPENDENT_CONTROL,
+                -1,
+                true
+        ));
+        assertEquals(2, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.AGGRESSIVE,
+                DependencyDomain.STRICT_WORLD,
+                2,
+                true
+        ));
+    }
 
-        final var fallback = handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true);
-        assertTrue(fallback.matched());
-        assertEquals(MultichannelPolicy.STRICT_GAME_CHANNEL, fallback.channel());
-
-        ready.set(true);
-        assertFalse(handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true).matched());
+    @Test
+    void everyProfileStaysStrictUntilCausalCapabilitiesAreReady() {
+        for (MultichannelPolicy.Profile profile : MultichannelPolicy.Profile.values()) {
+            assertEquals(7, MultichannelPolicy.selectChannel(
+                    profile,
+                    DependencyDomain.EPHEMERAL_EFFECT,
+                    4,
+                    false
+            ));
+        }
     }
 
     @Test

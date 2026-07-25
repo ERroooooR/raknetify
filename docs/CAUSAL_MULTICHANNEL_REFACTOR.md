@@ -18,7 +18,8 @@ Current implementation status:
 - Stage 1: implemented.
 - Stage 2: implemented with application-level capability negotiation and bounded envelopes.
 - Stage 3: implemented with per-channel drain markers, acknowledgements and gameplay epochs.
-- Stage 4: pending.
+- Stage 4: implemented with conservative domain classification, negotiated
+  reopening and deficit round-robin scheduling.
 
 ## Stage 1: strict causal stream
 
@@ -68,8 +69,23 @@ capability keep their existing ordered traffic instead of invoking that lossy fa
 - Reopen a channel only for an explicit, tested independent domain.
 - Use weighted fair scheduling between independent domains while retaining FIFO within each domain.
 
-Candidate bypass traffic includes transport pings and purely visual effects. Chunk bodies require
-an epoch-aware commit dependency before entity or block-entity state may pass them.
+The compatibility profile now translates only the legacy unordered-control bucket into
+`INDEPENDENT_CONTROL` on reliable ordered channel 1 and the legacy sound/particle/vibration bucket
+into `EPHEMERAL_EFFECT` on reliable ordered channel 4. These channels remain closed until atomic
+bundles, lossless fences and gameplay epochs have all been negotiated. The `aggressive` profile
+continues to expose the original channel table for explicit comparison.
+
+Unknown packets, every custom payload, entity/world/container traffic and transition packets use
+`STRICT_WORLD` on channel 7. Fabric identifies chunk, light and biome bodies as `GUARDED_BULK`, but
+that domain deliberately shares the strict scheduling queue and channel 7: it is observable
+separately, yet cannot overtake entity or block-entity state until an epoch-aware chunk commit
+dependency is implemented.
+
+A work-conserving deficit round-robin scheduler runs before RakNet fragmentation and reliability.
+It uses a 4:2:1 byte quantum for strict, independent-control and effect queues, while retaining FIFO
+within each queue. Strict world and guarded bulk share one FIFO. The old reflection-based
+replacement of `ReliabilityHandler.frameQueue` has been removed. JSONL metrics now expose queued,
+sent and pending frame/byte arrays in `DependencyDomain` enum order.
 
 ## Verification
 

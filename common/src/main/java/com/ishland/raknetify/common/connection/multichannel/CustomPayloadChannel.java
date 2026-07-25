@@ -24,33 +24,13 @@
 
 package com.ishland.raknetify.common.connection.multichannel;
 
-import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
-import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
-
 import java.util.Objects;
 import java.util.function.IntPredicate;
 
 public class CustomPayloadChannel {
-
-    public static final Object2IntOpenHashMap<String> identifier2channel;
-
-    static {
-        // See .fabric.common.connection.RakNetMultiChannel
-
-        identifier2channel = new Object2IntOpenHashMap<>();
-        identifier2channel.defaultReturnValue(0);
-        identifier2channel.put("porting_lib:extra_data_entity_spawn", 2);
-        identifier2channel.put("porting_lib:extra_entity_spawn_data", 2); // https://github.com/Fabricators-of-Create/Porting-Lib/commit/4b0cd845731f89eafd9fb39e13e1a7d87f5e14a4
-        // NeoForge sends this immediately after the vanilla add-entity packet for
-        // IEntityWithComplexSpawn entities. Both packets must share an ordered
-        // channel: the payload looks the entity up by id before applying its
-        // custom spawn data. Create contraptions otherwise can tick with a null
-        // contraption when the two RakNet channels are delivered out of order.
-        identifier2channel.put("neoforge:advanced_add_entity", 2);
-    }
 
     public static class OverrideHandler implements RakNetSimpleMultiChannelCodec.OverrideHandler {
 
@@ -71,15 +51,10 @@ public class CustomPayloadChannel {
                 return RakNetSimpleMultiChannelCodec.OverrideResult.pass();
             }
             if (isCustomPayload.test(packetId)) {
-                try {
-                    final String identifier = MathUtil.readString(buf); // we assume modern custom payloads
-                    if (Constants.DEBUG) System.out.println("Raknetify: Handling custom payload: " + identifier);
-                    return identifier2channel.containsKey(identifier)
-                            ? RakNetSimpleMultiChannelCodec.OverrideResult.route(identifier2channel.getInt(identifier))
-                            : RakNetSimpleMultiChannelCodec.OverrideResult.pass();
-                } catch (RuntimeException e) {
-                    return RakNetSimpleMultiChannelCodec.OverrideResult.pass();
-                }
+                // A payload identifier is not a causal-independence proof.
+                // Known entity-spawn payloads, unknown mod payloads and even
+                // payload formats introduced by newer versions remain strict.
+                return RakNetSimpleMultiChannelCodec.OverrideResult.strict();
             } else {
                 return RakNetSimpleMultiChannelCodec.OverrideResult.pass();
             }

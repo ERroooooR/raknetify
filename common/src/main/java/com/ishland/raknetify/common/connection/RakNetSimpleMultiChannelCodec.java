@@ -25,6 +25,9 @@
 package com.ishland.raknetify.common.connection;
 
 import com.ishland.raknetify.common.Constants;
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomainScheduler;
+import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
@@ -93,7 +96,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
     private final Queue<PendingControlWrite> pendingControlWrites = new LinkedList<>();
     private final Queue<PendingInboundEpochFrame> pendingInboundEpochFrames = new LinkedList<>();
+    private final DependencyDomainScheduler<ScheduledWrite> domainScheduler =
+            new DependencyDomainScheduler<>();
     private int pendingInboundEpochBytes;
+    private boolean domainDrainScheduled;
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
@@ -106,6 +112,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             ReferenceCountUtil.safeRelease(pendingControlWrite.message);
         }
         failPendingInboundEpochFrames();
+        failScheduledWrites(ctx, cause);
         super.handlerRemoved(ctx);
     }
 
@@ -207,7 +214,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
             final FrameData frameData = encode0(ctx, buf, decision);
             if (frameData != null) {
-                ctx.write(frameData, promise);
+                writeFrame(ctx, frameData, promise, decision.domain());
             } else {
                 promise.trySuccess();
             }
@@ -228,7 +235,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                     && ctx.channel().config() instanceof RakNet.Config config) {
                 config.getMetrics().applicationBatch(buf.readableBytes());
             }
-            final int packetChannelOverride = decision.isBundleDelimiter() ? 7 : decision.channel();
+            final int packetChannelOverride = decision.isBundleDelimiter()
+                    ? MultichannelPolicy.STRICT_GAME_CHANNEL
+                    : MultichannelPolicy.selectChannel(
+                            MultichannelPolicy.configuredProfile(),
+                            decision.domain(),
+                            decision.channel(),
+                            isDependencyDomainsEnabled()
+                    );
             ByteBuf gameplayPayload = null;
             final FrameData frameData;
             try {
@@ -275,7 +289,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                     }
                 }
             });
-            ctx.write(frameData, envelopePromise);
+            writeFrame(
+                    ctx,
+                    frameData,
+                    envelopePromise,
+                    DependencyDomain.STRICT_WORLD
+            );
             frameData = null;
         } catch (Throwable throwable) {
             for (ChannelPromise promise : promises) {
@@ -361,6 +380,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         return isMultichannelEnabled && isAtomicBundleNegotiated();
     }
 
+    public boolean isDependencyDomainsEnabled() {
+        final long required = CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
+                | CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+                | CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH;
+        return isMultichannelEnabled
+                && localCapabilitiesSent
+                && (remoteCapabilities & required) == required;
+    }
+
     private boolean isAtomicBundleNegotiated() {
         return localCapabilitiesSent
                 && (remoteCapabilities & CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE) != 0;
@@ -398,7 +426,98 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 }
             }
         }
-        return firstMatch.matched() ? firstMatch : OverrideResult.route(0);
+        return firstMatch.matched() ? firstMatch : OverrideResult.strict();
+    }
+
+    @Override
+    public void flush(ChannelHandlerContext ctx) throws Exception {
+        drainScheduledWrites(ctx);
+        super.flush(ctx);
+    }
+
+    private void writeFrame(
+            ChannelHandlerContext ctx,
+            FrameData frameData,
+            ChannelPromise promise,
+            DependencyDomain domain
+    ) {
+        if (!isDependencyDomainsEnabled()) {
+            ctx.write(frameData, promise);
+            return;
+        }
+
+        final int bytes = frameData.getDataSize();
+        domainScheduler.offer(domain, new ScheduledWrite(frameData, promise, bytes), bytes);
+        recordDomainQueued(ctx, domain, bytes);
+        if (!domainDrainScheduled) {
+            domainDrainScheduled = true;
+            ctx.executor().execute(() -> {
+                domainDrainScheduled = false;
+                if (!domainScheduler.isEmpty()) {
+                    drainScheduledWrites(ctx);
+                    ctx.flush();
+                }
+            });
+        }
+    }
+
+    private void drainScheduledWrites(ChannelHandlerContext ctx) {
+        DependencyDomainScheduler.Scheduled<ScheduledWrite> scheduled;
+        while ((scheduled = domainScheduler.poll()) != null) {
+            final ScheduledWrite write = scheduled.value();
+            try {
+                ctx.write(write.frameData, write.promise);
+                recordDomainSent(ctx, scheduled.domain(), write.bytes);
+            } catch (Throwable throwable) {
+                recordDomainDiscarded(ctx, scheduled.domain(), write.bytes);
+                ReferenceCountUtil.safeRelease(write.frameData);
+                write.promise.tryFailure(throwable);
+                ctx.fireExceptionCaught(throwable);
+            }
+        }
+    }
+
+    private void failScheduledWrites(ChannelHandlerContext ctx, Throwable cause) {
+        DependencyDomainScheduler.Scheduled<ScheduledWrite> scheduled;
+        while ((scheduled = domainScheduler.poll()) != null) {
+            final ScheduledWrite write = scheduled.value();
+            recordDomainDiscarded(ctx, scheduled.domain(), write.bytes);
+            ReferenceCountUtil.safeRelease(write.frameData);
+            write.promise.tryFailure(cause);
+        }
+    }
+
+    private static void recordDomainQueued(
+            ChannelHandlerContext ctx,
+            DependencyDomain domain,
+            int bytes
+    ) {
+        if (ctx.channel().config() instanceof RakNet.Config config
+                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
+            logger.dependencyDomainQueued(domain, bytes);
+        }
+    }
+
+    private static void recordDomainSent(
+            ChannelHandlerContext ctx,
+            DependencyDomain domain,
+            int bytes
+    ) {
+        if (ctx.channel().config() instanceof RakNet.Config config
+                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
+            logger.dependencyDomainSent(domain, bytes);
+        }
+    }
+
+    private static void recordDomainDiscarded(
+            ChannelHandlerContext ctx,
+            DependencyDomain domain,
+            int bytes
+    ) {
+        if (ctx.channel().config() instanceof RakNet.Config config
+                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
+            logger.dependencyDomainDiscarded(domain, bytes);
+        }
     }
 
     @Override
@@ -594,22 +713,29 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
      * recognize the packet, and identifies bundle delimiters as protocol
      * boundaries rather than disposable packets.
      */
-    public record OverrideResult(boolean matched, int channel) {
+    public record OverrideResult(
+            boolean matched,
+            int channel,
+            DependencyDomain domain
+    ) {
 
-        private static final OverrideResult PASS = new OverrideResult(false, 0);
+        private static final OverrideResult PASS =
+                new OverrideResult(false, 0, DependencyDomain.STRICT_WORLD);
         private static final OverrideResult BUNDLE_DELIMITER =
-                new OverrideResult(true, Integer.MIN_VALUE);
-        private static final OverrideResult RELIABLE_UNORDERED = new OverrideResult(true, -1);
-        private static final OverrideResult UNRELIABLE = new OverrideResult(true, -2);
+                new OverrideResult(
+                        true,
+                        Integer.MIN_VALUE,
+                        DependencyDomain.STRICT_WORLD
+                );
         private static final OverrideResult[] ORDERED = new OverrideResult[]{
-                new OverrideResult(true, 0),
-                new OverrideResult(true, 1),
-                new OverrideResult(true, 2),
-                new OverrideResult(true, 3),
-                new OverrideResult(true, 4),
-                new OverrideResult(true, 5),
-                new OverrideResult(true, 6),
-                new OverrideResult(true, 7)
+                legacy(0),
+                legacy(1),
+                legacy(2),
+                legacy(3),
+                legacy(4),
+                legacy(5),
+                legacy(6),
+                legacy(7)
         };
 
         public static OverrideResult pass() {
@@ -620,6 +746,21 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return BUNDLE_DELIMITER;
         }
 
+        public static OverrideResult strict() {
+            return new OverrideResult(
+                    true,
+                    MultichannelPolicy.STRICT_GAME_CHANNEL,
+                    DependencyDomain.STRICT_WORLD
+            );
+        }
+
+        public static OverrideResult classify(
+                DependencyDomain domain,
+                int aggressiveChannel
+        ) {
+            return new OverrideResult(true, aggressiveChannel, domain);
+        }
+
         public boolean isBundleDelimiter() {
             return matched && channel == Integer.MIN_VALUE;
         }
@@ -627,9 +768,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         public static OverrideResult route(int channel) {
             if (channel >= 0 && channel < ORDERED.length) return ORDERED[channel];
             if (channel == Integer.MIN_VALUE) return BUNDLE_DELIMITER;
-            if (channel == -1) return RELIABLE_UNORDERED;
-            if (channel == -2) return UNRELIABLE;
-            return new OverrideResult(true, channel);
+            return legacy(channel);
+        }
+
+        private static OverrideResult legacy(int channel) {
+            return new OverrideResult(
+                    true,
+                    channel,
+                    DependencyDomain.fromLegacyChannel(channel)
+            );
         }
     }
 
@@ -668,6 +815,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private record PendingInboundEpochFrame(int epoch, ByteBuf payload) {
+    }
+
+    private record ScheduledWrite(
+            FrameData frameData,
+            ChannelPromise promise,
+            int bytes
+    ) {
     }
 
 }

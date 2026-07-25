@@ -24,10 +24,7 @@
 
 package com.ishland.raknetify.common.connection.multichannel;
 
-import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
-
 import java.util.Locale;
-import java.util.function.BooleanSupplier;
 
 /**
  * Connection-wide safety policy for Minecraft's originally single ordered
@@ -51,28 +48,19 @@ public final class MultichannelPolicy {
         return CONFIGURED_PROFILE;
     }
 
-    public static RakNetSimpleMultiChannelCodec.OverrideHandler configuredProfileHandler() {
-        return configuredProfileHandler(() -> false);
-    }
-
-    public static RakNetSimpleMultiChannelCodec.OverrideHandler configuredProfileHandler(
-            BooleanSupplier independentChannelsReady
-    ) {
-        return profileHandler(CONFIGURED_PROFILE, independentChannelsReady);
-    }
-
-    static RakNetSimpleMultiChannelCodec.OverrideHandler profileHandler(Profile profile) {
-        return profileHandler(profile, () -> true);
-    }
-
-    static RakNetSimpleMultiChannelCodec.OverrideHandler profileHandler(
+    public static int selectChannel(
             Profile profile,
-            BooleanSupplier independentChannelsReady
+            DependencyDomain domain,
+            int aggressiveChannel,
+            boolean independentDomainsReady
     ) {
-        return (buf, suppressWarning) -> profile == Profile.COMPATIBILITY
-                || !independentChannelsReady.getAsBoolean()
-                ? RakNetSimpleMultiChannelCodec.OverrideResult.route(STRICT_GAME_CHANNEL)
-                : RakNetSimpleMultiChannelCodec.OverrideResult.pass();
+        if (!independentDomainsReady) {
+            return STRICT_GAME_CHANNEL;
+        }
+        if (profile == Profile.AGGRESSIVE) {
+            return aggressiveChannel;
+        }
+        return domain.orderChannel();
     }
 
     static Profile parseProfile(String value) {

@@ -28,7 +28,6 @@ import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
-import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.fabric.common.compat.viafabric.ViaFabricCompatInjector;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
@@ -71,13 +70,6 @@ public class RakNetFabricConnectionUtil {
                             ? RakNetSimpleMultiChannelCodec.OverrideResult.route(7)
                             : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
-            // Compatibility-first is the default. It restores Minecraft's
-            // original global packet order and lets vanilla bundle delimiters
-            // reach the peer, while the aggressive legacy classifier remains
-            // available as an explicit comparison profile.
-            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler(
-                    multiChannelCodec::isAtomicBundleEnabled
-            ));
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }

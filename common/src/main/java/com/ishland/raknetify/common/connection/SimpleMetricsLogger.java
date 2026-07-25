@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import com.ishland.raknetify.common.util.MathUtil;
 import network.ycc.raknet.RakNet;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
@@ -103,6 +104,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long applicationBatches = 0L;
     private volatile long applicationBatchBytes = 0L;
     private volatile long applicationBatchMaxBytes = 0L;
+    private final long[] dependencyDomainQueuedFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainQueuedBytes =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainSentFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainSentBytes =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainPendingFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainPendingBytes =
+            new long[DependencyDomain.values().length];
     private volatile long ackRepeatedPackets = 0L;
     private volatile long ackRepeatedFrameSets = 0L;
     private volatile long framesError = 0L;
@@ -374,6 +387,49 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         applicationBatches++;
         applicationBatchBytes += bytes;
         applicationBatchMaxBytes = Math.max(applicationBatchMaxBytes, bytes);
+    }
+
+    public synchronized void dependencyDomainQueued(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainQueuedFrames[index]++;
+        dependencyDomainQueuedBytes[index] += bytes;
+        dependencyDomainPendingFrames[index]++;
+        dependencyDomainPendingBytes[index] += bytes;
+    }
+
+    public synchronized void dependencyDomainSent(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainSentFrames[index]++;
+        dependencyDomainSentBytes[index] += bytes;
+        dependencyDomainPendingFrames[index] = Math.max(
+                0,
+                dependencyDomainPendingFrames[index] - 1
+        );
+        dependencyDomainPendingBytes[index] = Math.max(
+                0,
+                dependencyDomainPendingBytes[index] - bytes
+        );
+    }
+
+    public synchronized void dependencyDomainDiscarded(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainPendingFrames[index] = Math.max(
+                0,
+                dependencyDomainPendingFrames[index] - 1
+        );
+        dependencyDomainPendingBytes[index] = Math.max(
+                0,
+                dependencyDomainPendingBytes[index] - bytes
+        );
     }
 
     @Override
@@ -794,6 +850,24 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getApplicationBatches() { return applicationBatches; }
     public long getApplicationBatchBytes() { return applicationBatchBytes; }
     public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
+    public synchronized long[] getDependencyDomainQueuedFrames() {
+        return Arrays.copyOf(dependencyDomainQueuedFrames, dependencyDomainQueuedFrames.length);
+    }
+    public synchronized long[] getDependencyDomainQueuedBytes() {
+        return Arrays.copyOf(dependencyDomainQueuedBytes, dependencyDomainQueuedBytes.length);
+    }
+    public synchronized long[] getDependencyDomainSentFrames() {
+        return Arrays.copyOf(dependencyDomainSentFrames, dependencyDomainSentFrames.length);
+    }
+    public synchronized long[] getDependencyDomainSentBytes() {
+        return Arrays.copyOf(dependencyDomainSentBytes, dependencyDomainSentBytes.length);
+    }
+    public synchronized long[] getDependencyDomainPendingFrames() {
+        return Arrays.copyOf(dependencyDomainPendingFrames, dependencyDomainPendingFrames.length);
+    }
+    public synchronized long[] getDependencyDomainPendingBytes() {
+        return Arrays.copyOf(dependencyDomainPendingBytes, dependencyDomainPendingBytes.length);
+    }
     public long getAckRepeatedPackets() { return ackRepeatedPackets; }
     public long getAckRepeatedFrameSets() { return ackRepeatedFrameSets; }
     public boolean isAdaptiveAckProtection() { return adaptiveAckProtection; }
@@ -859,6 +933,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"ordered_channel_max_wait_ns\":%s," +
                         "\"application_batches\":%d,\"application_batch_bytes\":%d," +
                         "\"application_batch_max_bytes\":%d," +
+                        "\"dependency_domain_names\":[\"STRICT_WORLD\",\"INDEPENDENT_CONTROL\",\"EPHEMERAL_EFFECT\",\"GUARDED_BULK\"]," +
+                        "\"dependency_domain_queued_frames\":%s,\"dependency_domain_queued_bytes\":%s," +
+                        "\"dependency_domain_sent_frames\":%s,\"dependency_domain_sent_bytes\":%s," +
+                        "\"dependency_domain_pending_frames\":%s,\"dependency_domain_pending_bytes\":%s," +
                         "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
                         "\"ack_protection\":%s,\"ack_flush_delay_ns\":%d,\"ack_repeat_delay_ns\":%d," +
                         "\"application_limited\":%s,\"backlog_state\":\"%s\"," +
@@ -962,6 +1040,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(orderedChannelBlockedOrderIndex),
                 Arrays.toString(orderedChannelReleasedFrames), Arrays.toString(orderedChannelMaxWaitNanos),
                 applicationBatches, applicationBatchBytes, applicationBatchMaxBytes,
+                Arrays.toString(getDependencyDomainQueuedFrames()),
+                Arrays.toString(getDependencyDomainQueuedBytes()),
+                Arrays.toString(getDependencyDomainSentFrames()),
+                Arrays.toString(getDependencyDomainSentBytes()),
+                Arrays.toString(getDependencyDomainPendingFrames()),
+                Arrays.toString(getDependencyDomainPendingBytes()),
                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
                 applicationLimited, backlogState, backlogAgeNanos, backlogProbes,

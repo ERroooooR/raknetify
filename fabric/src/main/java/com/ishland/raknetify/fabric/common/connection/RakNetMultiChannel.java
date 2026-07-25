@@ -25,6 +25,7 @@
 package com.ishland.raknetify.fabric.common.connection;
 
 import com.google.common.collect.Sets;
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.MappingResolver;
@@ -364,6 +365,16 @@ public class RakNetMultiChannel {
 
     });
 
+    /**
+     * Bulk world bodies are identified separately for metrics and future
+     * commit dependencies. They still share the strict queue and channel 7.
+     */
+    private static final Set<Class<?>> guardedBulk = createClassSet(new String[]{
+            "net/minecraft/class_2672", // ChunkDataS2CPacket
+            "net/minecraft/class_2676", // LightUpdateS2CPacket
+            "net/minecraft/class_8212", // BiomeUpdateS2CPacket
+    });
+
     private static final Set<Class<?>> unreliable = createClassSet(new String[]{
     });
 
@@ -422,6 +433,21 @@ public class RakNetMultiChannel {
             channelOverride = 7;
         }
         return channelOverride;
+    }
+
+    public static DependencyDomain getPacketDependencyDomain(
+            Class<?> clazz,
+            boolean suppressWarning
+    ) {
+        if (clazz == null) {
+            return DependencyDomain.STRICT_WORLD;
+        }
+        if (guardedBulk.contains(clazz)) {
+            return DependencyDomain.GUARDED_BULK;
+        }
+        return DependencyDomain.fromLegacyChannel(
+                getPacketChannelOverride(clazz, suppressWarning)
+        );
     }
 
     public static void init() {

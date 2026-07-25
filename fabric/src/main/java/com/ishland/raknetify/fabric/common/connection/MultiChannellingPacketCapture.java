@@ -69,8 +69,16 @@ public class MultiChannellingPacketCapture extends ChannelOutboundHandlerAdapter
 
         @Override
         public RakNetSimpleMultiChannelCodec.OverrideResult getChannelOverride(ByteBuf buf, boolean suppressWarning) {
-            return RakNetSimpleMultiChannelCodec.OverrideResult.route(
-                    RakNetMultiChannel.getPacketChannelOverride(packetClass, suppressWarning)
+            final int legacyChannel = RakNetMultiChannel.getPacketChannelOverride(
+                    packetClass,
+                    suppressWarning
+            );
+            return RakNetSimpleMultiChannelCodec.OverrideResult.classify(
+                    RakNetMultiChannel.getPacketDependencyDomain(
+                            packetClass,
+                            suppressWarning
+                    ),
+                    legacyChannel
             );
         }
 
