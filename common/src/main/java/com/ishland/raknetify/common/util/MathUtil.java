@@ -24,9 +24,9 @@
 
 package com.ishland.raknetify.common.util;
 
-import com.google.common.base.Charsets;
 import io.netty.buffer.ByteBuf;
 
+import java.nio.charset.StandardCharsets;
 import java.text.CharacterIterator;
 import java.text.StringCharacterIterator;
 
@@ -75,7 +75,7 @@ public class MathUtil {
             throw new IllegalArgumentException("Cannot receive string longer than " + maxLen * 3 + " (got " + len + " bytes)");
         }
 
-        String s = buf.toString(buf.readerIndex(), len, Charsets.UTF_8);
+        String s = buf.toString(buf.readerIndex(), len, StandardCharsets.UTF_8);
         buf.readerIndex(buf.readerIndex() + len);
 
         if (s.length() > maxLen) {

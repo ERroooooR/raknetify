@@ -199,8 +199,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     protected int getChannelOverride(ByteBuf buf, boolean suppressWarning) {
         synchronized (handlers) {
             for (OverrideHandler handler : handlers) {
-                final int override = handler.getChannelOverride(buf, suppressWarning);
-                if (override != 0) return override;
+                final OverrideResult override = handler.getChannelOverride(buf, suppressWarning);
+                if (override.matched()) return override.channel();
             }
         }
         return 0;
@@ -239,7 +239,42 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     public interface OverrideHandler {
-        int getChannelOverride(ByteBuf buf, boolean suppressWarning);
+        OverrideResult getChannelOverride(ByteBuf buf, boolean suppressWarning);
+    }
+
+    /**
+     * Separates an explicit channel-zero decision from a handler that did not
+     * recognize the packet. The old integer API used zero for both meanings,
+     * which made conservative fallback policies dependent on handler order.
+     */
+    public record OverrideResult(boolean matched, int channel) {
+
+        private static final OverrideResult PASS = new OverrideResult(false, 0);
+        private static final OverrideResult DISCARD = new OverrideResult(true, Integer.MIN_VALUE);
+        private static final OverrideResult RELIABLE_UNORDERED = new OverrideResult(true, -1);
+        private static final OverrideResult UNRELIABLE = new OverrideResult(true, -2);
+        private static final OverrideResult[] ORDERED = new OverrideResult[]{
+                new OverrideResult(true, 0),
+                new OverrideResult(true, 1),
+                new OverrideResult(true, 2),
+                new OverrideResult(true, 3),
+                new OverrideResult(true, 4),
+                new OverrideResult(true, 5),
+                new OverrideResult(true, 6),
+                new OverrideResult(true, 7)
+        };
+
+        public static OverrideResult pass() {
+            return PASS;
+        }
+
+        public static OverrideResult route(int channel) {
+            if (channel >= 0 && channel < ORDERED.length) return ORDERED[channel];
+            if (channel == Integer.MIN_VALUE) return DISCARD;
+            if (channel == -1) return RELIABLE_UNORDERED;
+            if (channel == -2) return UNRELIABLE;
+            return new OverrideResult(true, channel);
+        }
     }
 
     public static class PacketIdBasedOverrideHandler implements OverrideHandler {
@@ -254,7 +289,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
 
         @Override
-        public int getChannelOverride(ByteBuf buf, boolean suppressWarning) {
+        public OverrideResult getChannelOverride(ByteBuf buf, boolean suppressWarning) {
             final ByteBuf slice = buf.slice();
             final int packetId = MathUtil.readVarInt(slice);
             final int override = this.channelMapping.get(packetId);
@@ -264,9 +299,9 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                         System.err.println("Raknetify: Unknown packet id %d for %s".formatted(packetId, descriptiveProtocolStatus));
                     }
                 }
-                return 7;
+                return OverrideResult.route(7);
             }
-            return override;
+            return OverrideResult.route(override);
         }
     }
 

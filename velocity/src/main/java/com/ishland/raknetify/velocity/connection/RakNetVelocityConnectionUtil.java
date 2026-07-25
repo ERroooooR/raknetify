@@ -26,6 +26,7 @@ import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompressi
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
+import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.velocity.RaknetifyVelocityPlugin;
 import com.velocitypowered.api.event.connection.LoginEvent;
@@ -57,8 +58,11 @@ public class RakNetVelocityConnectionUtil {
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
             multiChannelCodec.addHandler((buf, suppressWarning) ->
-                    channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null ? 7 : 0
+                    channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null
+                            ? RakNetSimpleMultiChannelCodec.OverrideResult.route(7)
+                            : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
+            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler());
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
             channel.pipeline().addAfter(RakNetSimpleMultiChannelCodec.NAME, ZstdCompresserCompatibilityHandler.NAME, new ZstdCompresserCompatibilityHandler());
             channel.pipeline().addAfter(ZstdCompresserCompatibilityHandler.NAME, ByteBufCopyDecoder.NAME, new ByteBufCopyDecoder());

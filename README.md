@@ -108,6 +108,25 @@ the recorder without affecting traffic. Records enter a bounded non-blocking que
 writer flushes them off the Netty event loop. `export_dropped` reports queue saturation, so slow
 storage is visible without stalling players.
 
+## Multichannel compatibility profile
+
+Raknetify defaults to the `compatibility` multichannel profile. Minecraft and mod loaders define
+implicit ordering between entity spawns, custom payloads, chunk state and bundle delimiters; those
+dependencies cannot be inferred safely from packet IDs. Compatibility mode therefore keeps every
+Minecraft game packet on one reliable ordered RakNet channel. This restores the original packet
+order and vanilla bundle atomicity while retaining RakNet congestion control, pacing, recovery,
+FEC, MTU discovery and compression.
+
+The previous packet-class-based channel split remains available for controlled comparison with:
+
+```text
+-Draknetify.multichannelProfile=aggressive
+```
+
+`aggressive` can reduce head-of-line blocking, but is not the default because unknown mod payloads
+may overtake the entity, world or inventory state they reference. Future causal-domain and epoch
+support will selectively reopen independent channels without requiring per-mod compatibility IDs.
+
 ## BandwidthOptimizer compatibility
 
 When the mod `bandwidthoptimizer` is present, Raknetify automatically leaves encoded-packet
