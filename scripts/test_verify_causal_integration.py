@@ -28,6 +28,15 @@ def sample(**overrides):
         "causal_outbound_frames_pending": 0,
         "causal_outbound_bytes_pending": 0,
         "causal_outbound_queue_overflows": 0,
+        "causal_outbound_queue_names": [
+            "APPLICATION",
+            "BUNDLE_CONTROL",
+            "FENCE",
+        ],
+        "causal_outbound_frames_queued_by_queue": [100, 0, 0],
+        "causal_outbound_frames_pending_by_queue": [0, 0, 0],
+        "causal_outbound_bytes_pending_by_queue": [0, 0, 0],
+        "causal_outbound_queue_overflows_by_queue": [0, 0, 0],
         "causal_future_frames_pending": 0,
         "causal_future_bytes_pending": 0,
         "causal_atomic_bundles_outbound": 4,
@@ -59,6 +68,9 @@ class VerifyCausalIntegrationTest(unittest.TestCase):
                     causal_outbound_frames_pending=2,
                     causal_outbound_bytes_pending=512,
                     causal_outbound_queue_overflows=1,
+                    causal_outbound_frames_pending_by_queue=[2, 0, 0],
+                    causal_outbound_bytes_pending_by_queue=[512, 0, 0],
+                    causal_outbound_queue_overflows_by_queue=[1, 0, 0],
                 )
             },
             minimum_transitions=100,
@@ -76,6 +88,25 @@ class VerifyCausalIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(
             any("outbound queue did not drain" in error for error in result.errors)
+        )
+
+    def test_mismatched_per_queue_totals_fail(self):
+        result = verify_metrics(
+            {
+                "cafebabe": sample(
+                    causal_outbound_frames_pending_by_queue=[1, 0, 0],
+                    causal_outbound_queue_overflows_by_queue=[0, 1, 0],
+                )
+            },
+            minimum_transitions=100,
+            require_bundles=False,
+            initial_errors=[],
+        )
+        self.assertTrue(
+            any("pending frame total" in error for error in result.errors)
+        )
+        self.assertTrue(
+            any("overflow total" in error for error in result.errors)
         )
 
     def test_loader_uses_final_sample_and_log_scanner_finds_protocol_failure(self):

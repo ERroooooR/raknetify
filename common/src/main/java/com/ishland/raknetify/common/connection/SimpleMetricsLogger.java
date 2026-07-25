@@ -127,6 +127,14 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile int causalOutboundFramesPending;
     private volatile long causalOutboundBytesPending;
     private volatile long causalOutboundQueueOverflows;
+    private final long[] causalOutboundFramesQueuedByQueue =
+            new long[CausalOutboundQueue.values().length];
+    private final int[] causalOutboundFramesPendingByQueue =
+            new int[CausalOutboundQueue.values().length];
+    private final long[] causalOutboundBytesPendingByQueue =
+            new long[CausalOutboundQueue.values().length];
+    private final long[] causalOutboundQueueOverflowsByQueue =
+            new long[CausalOutboundQueue.values().length];
     private volatile long causalFutureFramesQueued;
     private volatile int causalFutureFramesPending;
     private volatile long causalFutureBytesPending;
@@ -473,18 +481,38 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         causalStaleFramesDropped++;
     }
 
-    public void causalOutboundFrameQueued(int framesPending, long bytesPending) {
+    public synchronized void causalOutboundFrameQueued(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
         causalOutboundFramesQueued++;
-        causalOutboundQueueState(framesPending, bytesPending);
+        causalOutboundFramesQueuedByQueue[queue.ordinal()]++;
+        causalOutboundQueueState(queue, framesPending, bytesPending);
     }
 
-    public void causalOutboundQueueState(int framesPending, long bytesPending) {
-        causalOutboundFramesPending = Math.max(0, framesPending);
-        causalOutboundBytesPending = Math.max(0L, bytesPending);
+    public synchronized void causalOutboundQueueState(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundFramesPendingByQueue[queue.ordinal()] =
+                Math.max(0, framesPending);
+        causalOutboundBytesPendingByQueue[queue.ordinal()] =
+                Math.max(0L, bytesPending);
+        causalOutboundFramesPending = Arrays.stream(
+                causalOutboundFramesPendingByQueue
+        ).sum();
+        causalOutboundBytesPending = Arrays.stream(
+                causalOutboundBytesPendingByQueue
+        ).sum();
     }
 
-    public void causalOutboundQueueOverflow() {
+    public synchronized void causalOutboundQueueOverflow(
+            CausalOutboundQueue queue
+    ) {
         causalOutboundQueueOverflows++;
+        causalOutboundQueueOverflowsByQueue[queue.ordinal()]++;
     }
 
     public void causalFutureFrameQueued(int framesPending, long bytesPending) {
@@ -955,6 +983,30 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public int getCausalOutboundFramesPending() { return causalOutboundFramesPending; }
     public long getCausalOutboundBytesPending() { return causalOutboundBytesPending; }
     public long getCausalOutboundQueueOverflows() { return causalOutboundQueueOverflows; }
+    public synchronized long[] getCausalOutboundFramesQueuedByQueue() {
+        return causalOutboundFramesQueuedByQueue.clone();
+    }
+    public synchronized int[] getCausalOutboundFramesPendingByQueue() {
+        return causalOutboundFramesPendingByQueue.clone();
+    }
+    public synchronized long[] getCausalOutboundBytesPendingByQueue() {
+        return causalOutboundBytesPendingByQueue.clone();
+    }
+    public synchronized long[] getCausalOutboundQueueOverflowsByQueue() {
+        return causalOutboundQueueOverflowsByQueue.clone();
+    }
+    private synchronized CausalOutboundQueueSnapshot causalOutboundQueueSnapshot() {
+        return new CausalOutboundQueueSnapshot(
+                causalOutboundFramesQueued,
+                causalOutboundFramesPending,
+                causalOutboundBytesPending,
+                causalOutboundQueueOverflows,
+                causalOutboundFramesQueuedByQueue.clone(),
+                causalOutboundFramesPendingByQueue.clone(),
+                causalOutboundBytesPendingByQueue.clone(),
+                causalOutboundQueueOverflowsByQueue.clone()
+        );
+    }
     public long getCausalFutureFramesQueued() { return causalFutureFramesQueued; }
     public int getCausalFutureFramesPending() { return causalFutureFramesPending; }
     public long getCausalFutureBytesPending() { return causalFutureBytesPending; }
@@ -999,6 +1051,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     String formatMetricsJsonl(long timestamp) {
+        final CausalOutboundQueueSnapshot causalQueues =
+                causalOutboundQueueSnapshot();
         return String.format(Locale.ROOT,
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
@@ -1043,6 +1097,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"causal_outbound_frames_pending\":%d," +
                         "\"causal_outbound_bytes_pending\":%d," +
                         "\"causal_outbound_queue_overflows\":%d," +
+                        "\"causal_outbound_queue_names\":[\"APPLICATION\",\"BUNDLE_CONTROL\",\"FENCE\"]," +
+                        "\"causal_outbound_frames_queued_by_queue\":%s," +
+                        "\"causal_outbound_frames_pending_by_queue\":%s," +
+                        "\"causal_outbound_bytes_pending_by_queue\":%s," +
+                        "\"causal_outbound_queue_overflows_by_queue\":%s," +
                         "\"causal_future_frames_queued\":%d," +
                         "\"causal_future_frames_pending\":%d,\"causal_future_bytes_pending\":%d," +
                         "\"causal_atomic_bundles_outbound\":%d," +
@@ -1160,9 +1219,14 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(getDependencyDomainPendingBytes()),
                 causalFencesStarted, causalFencesCompleted, causalFencesFailed,
                 causalInboundFencesCompleted, causalOutboundEpoch, causalInboundEpoch,
-                causalStaleFramesDropped, causalOutboundFramesQueued,
-                causalOutboundFramesPending, causalOutboundBytesPending,
-                causalOutboundQueueOverflows, causalFutureFramesQueued,
+                causalStaleFramesDropped, causalQueues.framesQueued(),
+                causalQueues.framesPending(), causalQueues.bytesPending(),
+                causalQueues.queueOverflows(),
+                Arrays.toString(causalQueues.framesQueuedByQueue()),
+                Arrays.toString(causalQueues.framesPendingByQueue()),
+                Arrays.toString(causalQueues.bytesPendingByQueue()),
+                Arrays.toString(causalQueues.queueOverflowsByQueue()),
+                causalFutureFramesQueued,
                 causalFutureFramesPending, causalFutureBytesPending,
                 causalAtomicBundlesOutbound, causalAtomicBundlePacketsOutbound,
                 causalAtomicBundlesInbound, causalAtomicBundlePacketsInbound,
@@ -1427,6 +1491,24 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     // ========== Misc ==========
+
+    public enum CausalOutboundQueue {
+        APPLICATION,
+        BUNDLE_CONTROL,
+        FENCE
+    }
+
+    private record CausalOutboundQueueSnapshot(
+            long framesQueued,
+            int framesPending,
+            long bytesPending,
+            long queueOverflows,
+            long[] framesQueuedByQueue,
+            int[] framesPendingByQueue,
+            long[] bytesPendingByQueue,
+            long[] queueOverflowsByQueue
+    ) {
+    }
 
     private MetricsSynchronizationHandler metricsSynchronizationHandler;
 

@@ -31,6 +31,8 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.util.ReferenceCountUtil;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
@@ -40,6 +42,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SynchronizationLayerTest {
@@ -123,6 +126,52 @@ class SynchronizationLayerTest {
         releasedLaterFrame.release();
         assertFalse(sender.finishAndReleaseAll());
         assertFalse(receiver.finishAndReleaseAll());
+    }
+
+    @Test
+    void overflowingFenceQueueFailsFenceAndReleasesEveryWrite() {
+        final SynchronizationLayer synchronizationLayer =
+                new SynchronizationLayer(new int[0], 4, 4);
+        final EmbeddedChannel channel = new EmbeddedChannel(
+                synchronizationLayer
+        );
+        CausalTransportProtocol.setNegotiatedCapabilities(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+
+        final ChannelPromise fencePromise = channel.newPromise();
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                fencePromise
+        );
+        final ByteBuf first = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf second = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf overflow = Unpooled.buffer(1).writeZero(1);
+        final ChannelPromise firstPromise = channel.newPromise();
+        final ChannelPromise secondPromise = channel.newPromise();
+        final ChannelPromise overflowPromise = channel.newPromise();
+        channel.pipeline().write(first, firstPromise);
+        channel.pipeline().write(second, secondPromise);
+        channel.pipeline().write(overflow, overflowPromise);
+
+        assertThrows(CorruptedFrameException.class, channel::checkException);
+        assertTrue(fencePromise.isDone());
+        assertFalse(fencePromise.isSuccess());
+        assertTrue(firstPromise.isDone());
+        assertFalse(firstPromise.isSuccess());
+        assertTrue(secondPromise.isDone());
+        assertFalse(secondPromise.isSuccess());
+        assertTrue(overflowPromise.isDone());
+        assertFalse(overflowPromise.isSuccess());
+        assertEquals(0, first.refCnt());
+        assertEquals(0, second.refCnt());
+        assertEquals(0, overflow.refCnt());
+        Object outbound;
+        while ((outbound = channel.readOutbound()) != null) {
+            ReferenceCountUtil.safeRelease(outbound);
+        }
+        assertFalse(channel.finishAndReleaseAll());
     }
 
     private static EmbeddedChannel channel(EventCapture capture) {

@@ -149,7 +149,9 @@ The verifier requires:
 - zero failed fences;
 - epoch counters equal their completed-fence counters;
 - zero stale gameplay frames;
-- zero causal outbound queue overflows and zero pending outbound frames/bytes;
+- zero causal outbound queue overflows and zero aggregate pending outbound frames/bytes across the
+  application, bundle-control and transport-fence queues;
+- per-queue pending/overflow arrays matching those aggregate counters and the expected queue schema;
 - zero pending future-epoch frames/bytes in the final sample;
 - at least one negotiated atomic bundle when `--require-bundles` is used;
 - no known fatal compatibility signature in the supplied logs.

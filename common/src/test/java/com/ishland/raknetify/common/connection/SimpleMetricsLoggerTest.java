@@ -73,9 +73,29 @@ class SimpleMetricsLoggerTest {
         logger.causalFenceFailed();
         logger.causalInboundFenceCompleted(1);
         logger.causalStaleFrameDropped();
-        logger.causalOutboundFrameQueued(2, 1024);
-        logger.causalOutboundQueueState(0, 0);
-        logger.causalOutboundQueueOverflow();
+        logger.causalOutboundFrameQueued(
+                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
+                2,
+                1024
+        );
+        logger.causalOutboundQueueState(
+                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
+                0,
+                0
+        );
+        logger.causalOutboundFrameQueued(
+                SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                1,
+                64
+        );
+        logger.causalOutboundQueueState(
+                SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                0,
+                0
+        );
+        logger.causalOutboundQueueOverflow(
+                SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
+        );
         logger.causalFutureFrameQueued(1, 4096);
         logger.causalFutureQueueState(0, 0);
         logger.causalAtomicBundleOutbound(7);
@@ -149,10 +169,22 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"causal_outbound_epoch\":1"));
         assertTrue(line.contains("\"causal_inbound_epoch\":1"));
         assertTrue(line.contains("\"causal_stale_frames_dropped\":1"));
-        assertTrue(line.contains("\"causal_outbound_frames_queued\":1"));
+        assertTrue(line.contains("\"causal_outbound_frames_queued\":2"));
         assertTrue(line.contains("\"causal_outbound_frames_pending\":0"));
         assertTrue(line.contains("\"causal_outbound_bytes_pending\":0"));
         assertTrue(line.contains("\"causal_outbound_queue_overflows\":1"));
+        assertTrue(line.contains(
+                "\"causal_outbound_frames_queued_by_queue\":[1, 0, 1]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_frames_pending_by_queue\":[0, 0, 0]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_bytes_pending_by_queue\":[0, 0, 0]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_queue_overflows_by_queue\":[0, 1, 0]"
+        ));
         assertTrue(line.contains("\"causal_future_frames_queued\":1"));
         assertTrue(line.contains("\"causal_future_frames_pending\":0"));
         assertTrue(line.contains("\"causal_atomic_bundles_outbound\":1"));

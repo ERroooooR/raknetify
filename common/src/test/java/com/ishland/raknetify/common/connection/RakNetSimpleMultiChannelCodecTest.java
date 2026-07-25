@@ -302,6 +302,50 @@ class RakNetSimpleMultiChannelCodecTest {
         assertFalse(channel.finishAndReleaseAll());
     }
 
+    @Test
+    void overflowingBundleControlQueueAbortsOpenBundleAndEveryControl() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd, 2, 64);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter());
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ChannelPromise openingPromise = channel.newPromise();
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                openingPromise
+        );
+        assertFalse(openingPromise.isDone());
+
+        final ChannelPromise firstControl = channel.newPromise();
+        final ChannelPromise secondControl = channel.newPromise();
+        final ChannelPromise overflowControl = channel.newPromise();
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                firstControl
+        );
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                secondControl
+        );
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                overflowControl
+        );
+
+        assertThrows(CorruptedFrameException.class, channel::checkException);
+        assertTrue(openingPromise.isDone());
+        assertFalse(openingPromise.isSuccess());
+        assertTrue(firstControl.isDone());
+        assertFalse(firstControl.isSuccess());
+        assertTrue(secondControl.isDone());
+        assertFalse(secondControl.isSuccess());
+        assertTrue(overflowControl.isDone());
+        assertFalse(overflowControl.isSuccess());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
     private static void negotiateCausalCapabilities(EmbeddedChannel channel) {
         assertTrue(channel.writeOutbound(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL));
         ReferenceCountUtil.safeRelease(channel.readOutbound());

@@ -40,9 +40,20 @@ REQUIRED_CAUSAL_FIELDS = (
     "causal_outbound_frames_pending",
     "causal_outbound_bytes_pending",
     "causal_outbound_queue_overflows",
+    "causal_outbound_queue_names",
+    "causal_outbound_frames_queued_by_queue",
+    "causal_outbound_frames_pending_by_queue",
+    "causal_outbound_bytes_pending_by_queue",
+    "causal_outbound_queue_overflows_by_queue",
     "causal_future_frames_pending",
     "causal_future_bytes_pending",
 )
+
+CAUSAL_OUTBOUND_QUEUE_NAMES = [
+    "APPLICATION",
+    "BUNDLE_CONTROL",
+    "FENCE",
+]
 
 
 @dataclass
@@ -117,6 +128,30 @@ def integer(sample: dict[str, Any], field: str, connection: str, errors: list[st
     return int(value)
 
 
+def integer_array(
+    sample: dict[str, Any],
+    field: str,
+    connection: str,
+    errors: list[str],
+) -> list[int]:
+    value = sample.get(field)
+    if not isinstance(value, list) or len(value) != len(CAUSAL_OUTBOUND_QUEUE_NAMES):
+        errors.append(
+            f"connection {connection}: field {field} must contain "
+            f"{len(CAUSAL_OUTBOUND_QUEUE_NAMES)} numeric values"
+        )
+        return [0] * len(CAUSAL_OUTBOUND_QUEUE_NAMES)
+    result: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            errors.append(
+                f"connection {connection}: field {field} contains a non-numeric value"
+            )
+            return [0] * len(CAUSAL_OUTBOUND_QUEUE_NAMES)
+        result.append(int(item))
+    return result
+
+
 def verify_metrics(
     samples: dict[str, dict[str, Any]],
     minimum_transitions: int,
@@ -156,6 +191,31 @@ def verify_metrics(
         )
         outbound_overflows = integer(
             sample, "causal_outbound_queue_overflows", connection, errors
+        )
+        queue_names = sample.get("causal_outbound_queue_names")
+        queued_frames_by_queue = integer_array(
+            sample,
+            "causal_outbound_frames_queued_by_queue",
+            connection,
+            errors,
+        )
+        pending_frames_by_queue = integer_array(
+            sample,
+            "causal_outbound_frames_pending_by_queue",
+            connection,
+            errors,
+        )
+        pending_bytes_by_queue = integer_array(
+            sample,
+            "causal_outbound_bytes_pending_by_queue",
+            connection,
+            errors,
+        )
+        overflows_by_queue = integer_array(
+            sample,
+            "causal_outbound_queue_overflows_by_queue",
+            connection,
+            errors,
         )
         future_frames = integer(
             sample, "causal_future_frames_pending", connection, errors
@@ -197,6 +257,39 @@ def verify_metrics(
         if stale:
             errors.append(
                 f"connection {connection}: {stale} stale gameplay frames reached the codec"
+            )
+        if queue_names != CAUSAL_OUTBOUND_QUEUE_NAMES:
+            errors.append(
+                f"connection {connection}: unexpected causal outbound queue schema "
+                f"{queue_names!r}"
+            )
+        if sum(pending_frames_by_queue) != outbound_frames:
+            errors.append(
+                f"connection {connection}: per-queue pending frame total "
+                f"{sum(pending_frames_by_queue)} does not match aggregate {outbound_frames}"
+            )
+        if sum(pending_bytes_by_queue) != outbound_bytes:
+            errors.append(
+                f"connection {connection}: per-queue pending byte total "
+                f"{sum(pending_bytes_by_queue)} does not match aggregate {outbound_bytes}"
+            )
+        if sum(overflows_by_queue) != outbound_overflows:
+            errors.append(
+                f"connection {connection}: per-queue overflow total "
+                f"{sum(overflows_by_queue)} does not match aggregate {outbound_overflows}"
+            )
+        if any(
+            value < 0
+            for values in (
+                queued_frames_by_queue,
+                pending_frames_by_queue,
+                pending_bytes_by_queue,
+                overflows_by_queue,
+            )
+            for value in values
+        ):
+            errors.append(
+                f"connection {connection}: negative per-queue causal counter"
             )
         if outbound_overflows:
             errors.append(

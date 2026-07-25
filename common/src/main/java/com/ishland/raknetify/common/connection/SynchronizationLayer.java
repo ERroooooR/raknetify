@@ -38,10 +38,8 @@ import network.ycc.raknet.RakNet;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
 
 /**
  * Lossless cross-channel drain fence.
@@ -59,7 +57,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     private static final int MAX_INBOUND_FENCES = 32;
 
     private final IntSet channelsToIgnore = new IntOpenHashSet();
-    private final Queue<PendingWrite> queuedWrites = new LinkedList<>();
+    private final BoundedPendingWriteQueue queuedWrites;
     private final List<ChannelPromise> activeFencePromises = new ArrayList<>();
     private final Map<Long, InboundFence> inboundFences = new HashMap<>();
 
@@ -72,6 +70,22 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     private long lastCompletedInboundFenceId;
 
     public SynchronizationLayer(int... channelsToIgnore) {
+        this(
+                channelsToIgnore,
+                CausalTransportProtocol.MAX_PENDING_CAUSAL_WRITES,
+                Constants.MAX_QUEUED_SIZE
+        );
+    }
+
+    SynchronizationLayer(
+            int[] channelsToIgnore,
+            int maxPendingWrites,
+            int maxPendingWriteBytes
+    ) {
+        this.queuedWrites = new BoundedPendingWriteQueue(
+                maxPendingWrites,
+                maxPendingWriteBytes
+        );
         for (int channel : channelsToIgnore) {
             if (channel < 0 || channel >= CausalFenceProtocol.ORDER_CHANNEL_COUNT) {
                 throw new IllegalArgumentException("Invalid ignored order channel: " + channel);
@@ -93,14 +107,14 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                 return;
             }
             if (waitingForAck) {
-                queuedWrites.add(new PendingWrite(msg, promise));
+                queuePendingWrite(ctx, msg, promise);
                 return;
             }
             beginFence(ctx, promise);
             return;
         }
         if (waitingForAck) {
-            queuedWrites.add(new PendingWrite(msg, promise));
+            queuePendingWrite(ctx, msg, promise);
             return;
         }
         super.write(ctx, msg, promise);
@@ -301,11 +315,20 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         outboundEpoch = completedEpoch;
         activeFenceId = 0L;
         activeFenceEpoch = 0;
+        final Throwable replayFailure = flushQueuedWrites(ctx);
         final SimpleMetricsLogger metrics = metrics(ctx);
+        if (replayFailure != null) {
+            if (metrics != null) {
+                metrics.causalFenceFailed();
+            }
+            completedPromises.forEach(promise ->
+                    promise.tryFailure(replayFailure)
+            );
+            return;
+        }
         if (metrics != null) {
             metrics.causalFenceCompleted(outboundEpoch);
         }
-        flushQueuedWrites(ctx);
         ctx.fireUserEventTriggered(new OutboundEpochAdvanced(completedEpoch));
         completedPromises.forEach(ChannelPromise::trySuccess);
     }
@@ -319,24 +342,27 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         }
     }
 
-    private void flushQueuedWrites(ChannelHandlerContext ctx) {
-        PendingWrite pendingWrite;
+    private Throwable flushQueuedWrites(ChannelHandlerContext ctx) {
+        BoundedPendingWriteQueue.PendingWrite pendingWrite;
         boolean replayedWrite = false;
         while (!waitingForAck && (pendingWrite = queuedWrites.poll()) != null) {
+            recordPendingWriteQueueState(ctx);
             try {
-                write(ctx, pendingWrite.message, pendingWrite.promise);
+                write(ctx, pendingWrite.message(), pendingWrite.promise());
                 replayedWrite = true;
             } catch (Throwable throwable) {
-                pendingWrite.promise.tryFailure(throwable);
-                ReferenceCountUtil.safeRelease(pendingWrite.message);
-                failQueuedWrites(throwable);
+                pendingWrite.promise().tryFailure(throwable);
+                ReferenceCountUtil.safeRelease(pendingWrite.message());
+                failQueuedWrites(ctx, throwable);
                 ctx.fireExceptionCaught(throwable);
-                return;
+                ctx.close();
+                return throwable;
             }
         }
         if (replayedWrite) {
             ctx.flush();
         }
+        return null;
     }
 
     private void failActiveFence(ChannelHandlerContext ctx, Throwable cause) {
@@ -354,16 +380,59 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         }
         activeFencePromises.forEach(promise -> promise.tryFailure(cause));
         activeFencePromises.clear();
-        failQueuedWrites(cause);
+        failQueuedWrites(ctx, cause);
         ctx.fireExceptionCaught(cause);
         ctx.close();
     }
 
-    private void failQueuedWrites(Throwable cause) {
-        PendingWrite pendingWrite;
-        while ((pendingWrite = queuedWrites.poll()) != null) {
-            pendingWrite.promise.tryFailure(cause);
-            ReferenceCountUtil.safeRelease(pendingWrite.message);
+    private void queuePendingWrite(
+            ChannelHandlerContext ctx,
+            Object message,
+            ChannelPromise promise
+    ) {
+        if (!queuedWrites.tryAdd(message, promise)) {
+            final CorruptedFrameException exception = new CorruptedFrameException(
+                    "Pending causal fence queue exceeded its bound "
+                            + "(frames=" + queuedWrites.size()
+                            + ", bytes=" + queuedWrites.bytes() + ")"
+            );
+            promise.tryFailure(exception);
+            ReferenceCountUtil.safeRelease(message);
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalOutboundQueueOverflow(
+                        SimpleMetricsLogger.CausalOutboundQueue.FENCE
+                );
+            }
+            failActiveFence(ctx, exception);
+            return;
+        }
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalOutboundFrameQueued(
+                    SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                    queuedWrites.size(),
+                    queuedWrites.bytes()
+            );
+        }
+    }
+
+    private void failQueuedWrites(
+            ChannelHandlerContext ctx,
+            Throwable cause
+    ) {
+        queuedWrites.failAll(cause);
+        recordPendingWriteQueueState(ctx);
+    }
+
+    private void recordPendingWriteQueueState(ChannelHandlerContext ctx) {
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalOutboundQueueState(
+                    SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                    queuedWrites.size(),
+                    queuedWrites.bytes()
+            );
         }
     }
 
@@ -378,7 +447,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         }
         activeFencePromises.forEach(promise -> promise.tryFailure(cause));
         activeFencePromises.clear();
-        failQueuedWrites(cause);
+        failQueuedWrites(ctx, cause);
         inboundFences.clear();
         super.handlerRemoved(ctx);
     }
@@ -395,9 +464,6 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     }
 
     public record OutboundEpochAdvanced(int epoch) {
-    }
-
-    private record PendingWrite(Object message, ChannelPromise promise) {
     }
 
     private static final class InboundFence {

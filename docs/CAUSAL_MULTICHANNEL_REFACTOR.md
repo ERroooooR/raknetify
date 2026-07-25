@@ -105,10 +105,13 @@ Automated verification now:
   Transition wait queues preserve the original order of control and gameplay writes. Completed
   ACK state is detached before callbacks can start the next fence, and fence markers/ACKs are
   explicitly flushed so a re-entrant transition cannot stall behind an already completed flush.
-- Bounds the causal outbound wait queue to 16,384 writes and 256 MiB. Overflow fails every held
-  promise, releases every retained message and closes the connection instead of allowing a lost
-  ACK to create unbounded memory growth. JSONL metrics and the acceptance verifier require that
-  this queue neither overflows nor remains non-empty at the settled sample.
+- Uses one reference-count-safe bounded queue implementation for all three outbound causal hold
+  points: application writes waiting for an epoch ACK, control signals waiting for an atomic
+  bundle to close, and transport writes waiting behind the eight-channel fence. Each queue is
+  bounded to 16,384 writes and 256 MiB. Overflow fails every held promise, releases every retained
+  message and closes the connection instead of allowing a lost ACK or delimiter to create
+  unbounded memory growth. JSONL metrics expose aggregate and per-queue counts; the acceptance
+  verifier requires that no queue overflows and their aggregate settled depth is zero.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet

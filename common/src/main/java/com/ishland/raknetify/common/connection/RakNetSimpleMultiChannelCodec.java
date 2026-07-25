@@ -55,8 +55,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     public static final Object SIGNAL_START_MULTICHANNEL = new Object();
 
     private final int packetId;
-    private final int maxPendingWrites;
-    private final int maxPendingWriteBytes;
+    private final BoundedPendingWriteQueue pendingWrites;
+    private final BoundedPendingWriteQueue pendingControlWrites;
 
     public RakNetSimpleMultiChannelCodec(int packetId) {
         this(
@@ -75,8 +75,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             throw new IllegalArgumentException("Pending causal queue limits must be positive");
         }
         this.packetId = packetId;
-        this.maxPendingWrites = maxPendingWrites;
-        this.maxPendingWriteBytes = maxPendingWriteBytes;
+        this.pendingWrites = new BoundedPendingWriteQueue(
+                maxPendingWrites,
+                maxPendingWriteBytes
+        );
+        this.pendingControlWrites = new BoundedPendingWriteQueue(
+                maxPendingWrites,
+                maxPendingWriteBytes
+        );
     }
 
     private final ObjectArrayList<OverrideHandler> handlers = new ObjectArrayList<>();
@@ -111,10 +117,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private int inboundEpoch;
 
     private boolean queuePendingWrites = false;
-    private final Queue<PendingWrite> pendingWrites = new LinkedList<>();
-    private long pendingWriteBytes;
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
-    private final Queue<PendingControlWrite> pendingControlWrites = new LinkedList<>();
     private final Queue<PendingInboundEpochFrame> pendingInboundEpochFrames = new LinkedList<>();
     private final DependencyDomainScheduler<ScheduledWrite> domainScheduler =
             new DependencyDomainScheduler<>();
@@ -126,11 +129,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
         failPendingWrites(ctx, cause);
         atomicBundleAssembler.abort(cause);
-        PendingControlWrite pendingControlWrite;
-        while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
-            pendingControlWrite.promise.tryFailure(cause);
-            ReferenceCountUtil.safeRelease(pendingControlWrite.message);
-        }
+        failPendingControlWrites(ctx, cause);
         failPendingInboundEpochFrames(ctx);
         failScheduledWrites(ctx, cause);
         super.handlerRemoved(ctx);
@@ -145,7 +144,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
         if (atomicBundleAssembler.isOpen()
                 && (msg == SIGNAL_START_MULTICHANNEL || msg == SynchronizationLayer.SYNC_REQUEST_OBJECT)) {
-            pendingControlWrites.add(new PendingControlWrite(msg, promise));
+            queuePendingControlWrite(ctx, msg, promise);
             return;
         }
 
@@ -334,32 +333,51 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private void flushPendingControlWrites(ChannelHandlerContext ctx) {
-        PendingControlWrite pendingControlWrite;
+        BoundedPendingWriteQueue.PendingWrite pendingControlWrite;
         while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
+            recordPendingWriteQueueState(
+                    ctx,
+                    pendingControlWrites,
+                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
+            );
             try {
-                write(ctx, pendingControlWrite.message, pendingControlWrite.promise);
+                write(
+                        ctx,
+                        pendingControlWrite.message(),
+                        pendingControlWrite.promise()
+                );
             } catch (Throwable throwable) {
-                pendingControlWrite.promise.tryFailure(throwable);
+                pendingControlWrite.promise().tryFailure(throwable);
+                ReferenceCountUtil.safeRelease(pendingControlWrite.message());
+                failAllCausalWrites(ctx, throwable);
                 ctx.fireExceptionCaught(throwable);
+                ctx.close();
+                return;
             }
         }
     }
 
     private void flushPendingWrites(ChannelHandlerContext ctx) {
         this.queuePendingWrites = false;
-        PendingWrite pendingWrite;
+        BoundedPendingWriteQueue.PendingWrite pendingWrite;
         boolean replayedWrite = false;
         while (!this.queuePendingWrites
                 && (pendingWrite = this.pendingWrites.poll()) != null) {
-            pendingWriteBytes -= pendingWrite.bytes;
-            recordPendingWriteQueueState(ctx);
+            recordPendingWriteQueueState(
+                    ctx,
+                    pendingWrites,
+                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION
+            );
             try {
-                write(ctx, pendingWrite.message, pendingWrite.promise);
+                write(ctx, pendingWrite.message(), pendingWrite.promise());
                 replayedWrite = true;
             } catch (Throwable t) {
-                pendingWrite.promise.tryFailure(t);
-                ReferenceCountUtil.safeRelease(pendingWrite.message);
+                pendingWrite.promise().tryFailure(t);
+                ReferenceCountUtil.safeRelease(pendingWrite.message());
+                failAllCausalWrites(ctx, t);
                 ctx.fireExceptionCaught(t);
+                ctx.close();
+                return;
             }
         }
         if (replayedWrite) {
@@ -368,13 +386,24 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private void failPendingWrites(ChannelHandlerContext ctx, Throwable cause) {
-        PendingWrite pendingWrite;
-        while ((pendingWrite = pendingWrites.poll()) != null) {
-            pendingWrite.promise.tryFailure(cause);
-            ReferenceCountUtil.safeRelease(pendingWrite.message);
-        }
-        pendingWriteBytes = 0L;
-        recordPendingWriteQueueState(ctx);
+        pendingWrites.failAll(cause);
+        recordPendingWriteQueueState(
+                ctx,
+                pendingWrites,
+                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION
+        );
+    }
+
+    private void failPendingControlWrites(
+            ChannelHandlerContext ctx,
+            Throwable cause
+    ) {
+        pendingControlWrites.failAll(cause);
+        recordPendingWriteQueueState(
+                ctx,
+                pendingControlWrites,
+                SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
+        );
     }
 
     private void queuePendingWrite(
@@ -382,54 +411,99 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             Object message,
             ChannelPromise promise
     ) {
-        final int bytes = pendingWriteBytes(message);
-        if (pendingWrites.size() >= maxPendingWrites
-                || bytes > maxPendingWriteBytes - pendingWriteBytes) {
-            final CorruptedFrameException exception = new CorruptedFrameException(
-                    "Pending causal write queue exceeded its bound "
-                            + "(frames=" + pendingWrites.size()
-                            + ", bytes=" + pendingWriteBytes + ")"
+        if (!pendingWrites.tryAdd(message, promise)) {
+            failPendingQueueOverflow(
+                    ctx,
+                    pendingWrites,
+                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
+                    "application",
+                    message,
+                    promise
             );
-            promise.tryFailure(exception);
-            ReferenceCountUtil.safeRelease(message);
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalOutboundQueueOverflow();
-            }
-            failPendingWrites(ctx, exception);
-            queuePendingWrites = false;
-            waitingForEpochFence = false;
-            ctx.fireExceptionCaught(exception);
-            ctx.close();
             return;
         }
-        pendingWrites.add(new PendingWrite(message, promise, bytes));
-        pendingWriteBytes += bytes;
         final SimpleMetricsLogger metrics = metrics(ctx);
         if (metrics != null) {
             metrics.causalOutboundFrameQueued(
+                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
                     pendingWrites.size(),
-                    pendingWriteBytes
+                    pendingWrites.bytes()
             );
         }
     }
 
-    private static int pendingWriteBytes(Object message) {
-        if (message instanceof ByteBuf byteBuf) {
-            return byteBuf.readableBytes();
+    private void queuePendingControlWrite(
+            ChannelHandlerContext ctx,
+            Object message,
+            ChannelPromise promise
+    ) {
+        if (!pendingControlWrites.tryAdd(message, promise)) {
+            failPendingQueueOverflow(
+                    ctx,
+                    pendingControlWrites,
+                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
+                    "bundle control",
+                    message,
+                    promise
+            );
+            return;
         }
-        if (message instanceof FrameData frameData) {
-            return frameData.getDataSize();
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalOutboundFrameQueued(
+                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
+                    pendingControlWrites.size(),
+                    pendingControlWrites.bytes()
+            );
         }
-        return 0;
     }
 
-    private void recordPendingWriteQueueState(ChannelHandlerContext ctx) {
+    private void failPendingQueueOverflow(
+            ChannelHandlerContext ctx,
+            BoundedPendingWriteQueue queue,
+            SimpleMetricsLogger.CausalOutboundQueue queueType,
+            String description,
+            Object message,
+            ChannelPromise promise
+    ) {
+        final CorruptedFrameException exception = new CorruptedFrameException(
+                "Pending causal " + description + " queue exceeded its bound "
+                        + "(frames=" + queue.size()
+                        + ", bytes=" + queue.bytes() + ")"
+        );
+        promise.tryFailure(exception);
+        ReferenceCountUtil.safeRelease(message);
+        final SimpleMetricsLogger metrics = metrics(ctx);
+        if (metrics != null) {
+            metrics.causalOutboundQueueOverflow(queueType);
+        }
+        failAllCausalWrites(ctx, exception);
+        ctx.fireExceptionCaught(exception);
+        ctx.close();
+    }
+
+    private void failAllCausalWrites(
+            ChannelHandlerContext ctx,
+            Throwable cause
+    ) {
+        queuePendingWrites = false;
+        waitingForEpochFence = false;
+        atomicBundleAssembler.abort(cause);
+        failPendingControlWrites(ctx, cause);
+        failPendingWrites(ctx, cause);
+    }
+
+    private void recordPendingWriteQueueState(
+            ChannelHandlerContext ctx,
+            BoundedPendingWriteQueue queue,
+            SimpleMetricsLogger.CausalOutboundQueue queueType
+    ) {
         final SimpleMetricsLogger metrics = metrics(ctx);
         if (metrics != null) {
             metrics.causalOutboundQueueState(
-                    pendingWrites.size(),
-                    pendingWriteBytes
+                    queueType,
+                    queue.size(),
+                    queue.bytes()
             );
         }
     }
@@ -942,16 +1016,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             }
             return OverrideResult.route(override);
         }
-    }
-
-    private record PendingWrite(
-            Object message,
-            ChannelPromise promise,
-            int bytes
-    ) {
-    }
-
-    private record PendingControlWrite(Object message, ChannelPromise promise) {
     }
 
     private record PendingInboundEpochFrame(int epoch, ByteBuf payload) {
