@@ -24,11 +24,18 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.Constants;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.embedded.EmbeddedChannel;
+import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RakNetSimpleMultiChannelCodecTest {
 
@@ -42,13 +49,99 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
-    void firstMatchedHandlerPreventsLaterDiscardClassification() {
+    void firstMatchedHandlerPreventsLaterOrdinaryOverride() {
         final TestCodec codec = new TestCodec();
         codec.addHandler((buf, suppressWarning) -> RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
         codec.addHandler((buf, suppressWarning) ->
-                RakNetSimpleMultiChannelCodec.OverrideResult.route(Integer.MIN_VALUE));
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(2));
 
         assertEquals(7, codec.classify());
+    }
+
+    @Test
+    void bundleBoundaryOutranksAnEarlierRoute() {
+        final TestCodec codec = new TestCodec();
+        codec.addHandler((buf, suppressWarning) -> RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter());
+
+        assertEquals(Integer.MIN_VALUE, codec.classify());
+    }
+
+    @Test
+    void negotiatedBundleIsOneFrameAndIsReconstructedSynchronously() {
+        final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) -> buf.getUnsignedByte(buf.readerIndex()) == 0
+                ? RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter()
+                : RakNetSimpleMultiChannelCodec.OverrideResult.route(2));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+
+        assertTrue(channel.writeOutbound(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL));
+        final FrameData capabilities = channel.readOutbound();
+        final FrameData startBarrier = channel.readOutbound();
+        assertEquals(Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID, capabilities.getPacketId());
+        assertEquals(Constants.RAKNET_PING_PACKET_ID, startBarrier.getPacketId());
+        capabilities.release();
+        startBarrier.release();
+
+        final ByteBuf capabilityPayload = CausalTransportProtocol.encodeCapabilities(
+                channel.alloc(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        final FrameData remoteCapabilities;
+        try {
+            remoteCapabilities = FrameData.create(
+                    channel.alloc(),
+                    Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID,
+                    capabilityPayload
+            );
+            remoteCapabilities.setOrderChannel(7);
+        } finally {
+            capabilityPayload.release();
+        }
+        assertFalse(channel.writeInbound(remoteCapabilities));
+        assertTrue(codec.isAtomicBundleEnabled());
+
+        final ChannelPromise openingPromise = channel.newPromise();
+        final ChannelPromise contentPromise = channel.newPromise();
+        final ChannelPromise closingPromise = channel.newPromise();
+        channel.pipeline().write(Unpooled.wrappedBuffer(new byte[]{0}), openingPromise);
+        channel.pipeline().write(Unpooled.wrappedBuffer(new byte[]{1, 42}), contentPromise);
+        assertFalse(openingPromise.isDone());
+        assertFalse(contentPromise.isDone());
+        channel.pipeline().write(Unpooled.wrappedBuffer(new byte[]{0}), closingPromise);
+        channel.pipeline().flush();
+        assertTrue(openingPromise.isSuccess());
+        assertTrue(contentPromise.isSuccess());
+        assertTrue(closingPromise.isSuccess());
+
+        final FrameData envelope = channel.readOutbound();
+        assertEquals(0xfd, envelope.getPacketId());
+        assertEquals(7, envelope.getOrderChannel());
+        final ByteBuf encodedEnvelope = envelope.createData().skipBytes(1);
+        try {
+            assertTrue(CausalTransportProtocol.isAtomicBundle(encodedEnvelope));
+        } finally {
+            encodedEnvelope.release();
+        }
+
+        assertTrue(channel.writeInbound(envelope));
+        assertPacket(channel.readInbound(), 0);
+        assertPacket(channel.readInbound(), 1, 42);
+        assertPacket(channel.readInbound(), 0);
+        assertNull(channel.readInbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    private static void assertPacket(ByteBuf packet, int... expected) {
+        try {
+            assertEquals(expected.length, packet.readableBytes());
+            for (int value : expected) {
+                assertEquals(value, packet.readUnsignedByte());
+            }
+        } finally {
+            packet.release();
+        }
     }
 
     private static final class TestCodec extends RakNetSimpleMultiChannelCodec {

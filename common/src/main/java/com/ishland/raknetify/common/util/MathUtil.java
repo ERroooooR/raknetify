@@ -64,6 +64,23 @@ public class MathUtil {
         return i;
     }
 
+    public static void writeVarInt(ByteBuf buf, int value) {
+        while ((value & -128) != 0) {
+            buf.writeByte(value & 127 | 128);
+            value >>>= 7;
+        }
+        buf.writeByte(value);
+    }
+
+    public static int varIntSize(int value) {
+        for (int bytes = 1; bytes < 5; bytes++) {
+            if ((value & -1 << bytes * 7) == 0) {
+                return bytes;
+            }
+        }
+        return 5;
+    }
+
     public static String readString(ByteBuf buf) {
         return readString(buf, Short.MAX_VALUE);
     }

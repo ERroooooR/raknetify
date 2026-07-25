@@ -33,6 +33,7 @@ public class Constants {
     public static final String RAKNET_GATE_PREFIX = "raknetg;";
     public static final String RAKNET_GATE_LARGE_MTU_PREFIX = "raknetgl;";
     public static final int RAKNET_PING_PACKET_ID = 0xFA;
+    public static final int RAKNET_CAUSAL_CONTROL_PACKET_ID = 0xF9;
     public static final int RAKNET_ROUTE_HINT_PACKET_ID = 0xFE;
     public static final byte RAKNET_ROUTE_HINT_VERSION = 2;
     public static final int RAKNET_ROUTE_HINT_TOKEN_LENGTH = 16;

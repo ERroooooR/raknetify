@@ -27,6 +27,7 @@ package com.ishland.raknetify.common.connection.multichannel;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 
 import java.util.Locale;
+import java.util.function.BooleanSupplier;
 
 /**
  * Connection-wide safety policy for Minecraft's originally single ordered
@@ -51,11 +52,25 @@ public final class MultichannelPolicy {
     }
 
     public static RakNetSimpleMultiChannelCodec.OverrideHandler configuredProfileHandler() {
-        return profileHandler(CONFIGURED_PROFILE);
+        return configuredProfileHandler(() -> false);
+    }
+
+    public static RakNetSimpleMultiChannelCodec.OverrideHandler configuredProfileHandler(
+            BooleanSupplier independentChannelsReady
+    ) {
+        return profileHandler(CONFIGURED_PROFILE, independentChannelsReady);
     }
 
     static RakNetSimpleMultiChannelCodec.OverrideHandler profileHandler(Profile profile) {
+        return profileHandler(profile, () -> true);
+    }
+
+    static RakNetSimpleMultiChannelCodec.OverrideHandler profileHandler(
+            Profile profile,
+            BooleanSupplier independentChannelsReady
+    ) {
         return (buf, suppressWarning) -> profile == Profile.COMPATIBILITY
+                || !independentChannelsReady.getAsBoolean()
                 ? RakNetSimpleMultiChannelCodec.OverrideResult.route(STRICT_GAME_CHANNEL)
                 : RakNetSimpleMultiChannelCodec.OverrideResult.pass();
     }

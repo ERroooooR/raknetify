@@ -75,7 +75,9 @@ public class RakNetFabricConnectionUtil {
             // original global packet order and lets vanilla bundle delimiters
             // reach the peer, while the aggressive legacy classifier remains
             // available as an explicit comparison profile.
-            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler());
+            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler(
+                    multiChannelCodec::isAtomicBundleEnabled
+            ));
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }

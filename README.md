@@ -124,8 +124,12 @@ The previous packet-class-based channel split remains available for controlled c
 ```
 
 `aggressive` can reduce head-of-line blocking, but is not the default because unknown mod payloads
-may overtake the entity, world or inventory state they reference. Future causal-domain and epoch
-support will selectively reopen independent channels without requiring per-mod compatibility IDs.
+may overtake the entity, world or inventory state they reference. It remains on the strict stream
+until both peers negotiate atomic-bundle support; an older peer therefore cannot accidentally
+enable the unsafe delimiter-dropping behavior. Negotiated bundles are sent as one logical game
+frame and reconstructed synchronously on receipt, while still using RakNet compression,
+fragmentation and recovery. Future causal-domain and epoch support will selectively reopen
+independent channels without requiring per-mod compatibility IDs.
 
 ## BandwidthOptimizer compatibility
 

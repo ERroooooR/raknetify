@@ -75,7 +75,9 @@ public class RakNetBungeeConnectionUtil {
             RakNetConnectionUtil.initChannel(channel);
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
-            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler());
+            multiChannelCodec.addHandler(MultichannelPolicy.configuredProfileHandler(
+                    multiChannelCodec::isAtomicBundleEnabled
+            ));
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }

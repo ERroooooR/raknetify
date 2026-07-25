@@ -28,8 +28,11 @@ import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
+import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.util.ReferenceCountUtil;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
@@ -79,29 +82,37 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private boolean isMultichannelEnabled;
+    private boolean localCapabilitiesSent;
+    private long remoteCapabilities;
 
     private boolean queuePendingWrites = false;
     private final Queue<PendingWrite> pendingWrites = new LinkedList<>();
+    private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
+    private final Queue<PendingControlWrite> pendingControlWrites = new LinkedList<>();
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
-        super.handlerRemoved(ctx);
-        for (PendingWrite pendingWrite : pendingWrites) {
-            pendingWrite.promise.setFailure(new IllegalStateException("Channel closed"));
-            pendingWrite.frameData.release();
+        final IllegalStateException cause = new IllegalStateException("Channel closed");
+        failPendingWrites(cause);
+        atomicBundleAssembler.abort(cause);
+        PendingControlWrite pendingControlWrite;
+        while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
+            pendingControlWrite.promise.tryFailure(cause);
+            ReferenceCountUtil.safeRelease(pendingControlWrite.message);
         }
+        super.handlerRemoved(ctx);
     }
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         if (this.queuePendingWrites && msg instanceof ByteBuf buf) {
-            final FrameData data = encode0(ctx, buf);
-            if (data != null) {
-                pendingWrites.add(new PendingWrite(data, promise));
-            } else {
-                promise.setSuccess();
-            }
-            buf.release();
+            pendingWrites.add(new PendingWrite(buf, promise));
+            return;
+        }
+
+        if (atomicBundleAssembler.isOpen()
+                && (msg == SIGNAL_START_MULTICHANNEL || msg == SynchronizationLayer.SYNC_REQUEST_OBJECT)) {
+            pendingControlWrites.add(new PendingControlWrite(msg, promise));
             return;
         }
 
@@ -112,15 +123,22 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 System.out.println("Raknetify: [MultiChannellingDataCodec] Failed to start multichannel: not available");
                 return;
             }
+            sendCapabilities(ctx, false);
             final ByteBuf buf = ctx.alloc().buffer(1).writeByte(0);
             try {
                 final FrameData frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_PING_PACKET_ID, buf);
                 frameData.setOrderChannel(7);
                 this.queuePendingWrites = true;
                 ctx.write(frameData).addListener(future -> {
-                    isMultichannelEnabled = true;
-                    if (Constants.DEBUG) System.out.println("Raknetify: [MultiChannellingDataCodec] Started multichannel");
-                    flushPendingWrites(ctx);
+                    if (future.isSuccess()) {
+                        isMultichannelEnabled = true;
+                        if (Constants.DEBUG)
+                            System.out.println("Raknetify: [MultiChannellingDataCodec] Started multichannel");
+                        flushPendingWrites(ctx);
+                    } else {
+                        queuePendingWrites = false;
+                        failPendingWrites(future.cause());
+                    }
                 });
             } finally {
                 buf.release();
@@ -138,32 +156,55 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
 
         if (msg instanceof ByteBuf buf && buf.isReadable()) {
-            try {
-                final FrameData frameData = encode0(ctx, buf);
-                if (frameData != null) {
-                    ctx.write(frameData, promise);
-                } else {
-                    promise.setSuccess();
-                }
-            } finally {
-                buf.release();
-            }
+            writeGamePacket(ctx, buf, promise);
             return;
         }
 
         super.write(ctx, msg, promise);
     }
 
-    private FrameData encode0(ChannelHandlerContext ctx, ByteBuf buf) {
+    private void writeGamePacket(ChannelHandlerContext ctx, ByteBuf buf, ChannelPromise promise) {
+        try {
+            final OverrideResult decision = getOverrideResult(buf, !isMultichannelEnabled);
+            if (isAtomicBundleEnabled()
+                    && (atomicBundleAssembler.isOpen() || decision.isBundleDelimiter())) {
+                final AtomicBundleAssembler.CompletedBundle completedBundle =
+                        atomicBundleAssembler.accept(
+                                ctx.alloc(),
+                                buf,
+                                promise,
+                                decision.isBundleDelimiter()
+                        );
+                if (completedBundle != null) {
+                    writeAtomicBundle(ctx, completedBundle);
+                }
+                return;
+            }
+
+            final FrameData frameData = encode0(ctx, buf, decision);
+            if (frameData != null) {
+                ctx.write(frameData, promise);
+            } else {
+                promise.trySuccess();
+            }
+        } catch (Throwable throwable) {
+            if (atomicBundleAssembler.isOpen()) {
+                atomicBundleAssembler.abort(throwable);
+            }
+            promise.tryFailure(throwable);
+            ctx.fireExceptionCaught(throwable);
+        } finally {
+            buf.release();
+        }
+    }
+
+    private FrameData encode0(ChannelHandlerContext ctx, ByteBuf buf, OverrideResult decision) {
         if (buf.isReadable()) {
             if (ctx.pipeline().get("zstd_encoder") != null
                     && ctx.channel().config() instanceof RakNet.Config config) {
                 config.getMetrics().applicationBatch(buf.readableBytes());
             }
-            final int packetChannelOverride = getChannelOverride(buf, !isMultichannelEnabled);
-            if (packetChannelOverride == Integer.MIN_VALUE) {
-                return null; // the void
-            }
+            final int packetChannelOverride = decision.isBundleDelimiter() ? 7 : decision.channel();
             final FrameData frameData = FrameData.create(ctx.alloc(), packetId, buf);
             if (isMultichannelEnabled) {
                 if (packetChannelOverride >= 0)
@@ -178,16 +219,117 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         return null;
     }
 
+    private void writeAtomicBundle(
+            ChannelHandlerContext ctx,
+            AtomicBundleAssembler.CompletedBundle completedBundle
+    ) {
+        final ByteBuf envelope = completedBundle.payload();
+        final List<ChannelPromise> promises = completedBundle.promises();
+        FrameData frameData = null;
+        try {
+            frameData = FrameData.create(ctx.alloc(), packetId, envelope);
+            frameData.setOrderChannel(7);
+
+            final ChannelPromise envelopePromise = ctx.newPromise();
+            envelopePromise.addListener(future -> {
+                for (ChannelPromise promise : promises) {
+                    if (future.isSuccess()) {
+                        promise.trySuccess();
+                    } else if (future.isCancelled()) {
+                        promise.cancel(false);
+                    } else {
+                        promise.tryFailure(future.cause());
+                    }
+                }
+            });
+            ctx.write(frameData, envelopePromise);
+            frameData = null;
+        } catch (Throwable throwable) {
+            for (ChannelPromise promise : promises) {
+                promise.tryFailure(throwable);
+            }
+            ctx.fireExceptionCaught(throwable);
+        } finally {
+            ReferenceCountUtil.safeRelease(envelope);
+            ReferenceCountUtil.safeRelease(frameData);
+        }
+
+        flushPendingControlWrites(ctx);
+    }
+
+    private void flushPendingControlWrites(ChannelHandlerContext ctx) {
+        PendingControlWrite pendingControlWrite;
+        while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
+            try {
+                write(ctx, pendingControlWrite.message, pendingControlWrite.promise);
+            } catch (Throwable throwable) {
+                pendingControlWrite.promise.tryFailure(throwable);
+                ctx.fireExceptionCaught(throwable);
+            }
+        }
+    }
+
     private void flushPendingWrites(ChannelHandlerContext ctx) {
         this.queuePendingWrites = false;
         PendingWrite pendingWrite;
         while ((pendingWrite = this.pendingWrites.poll()) != null) {
             try {
-                super.write(ctx, pendingWrite.frameData, pendingWrite.promise);
+                writeGamePacket(ctx, pendingWrite.packet, pendingWrite.promise);
             } catch (Throwable t) {
+                pendingWrite.promise.tryFailure(t);
+                ReferenceCountUtil.safeRelease(pendingWrite.packet);
                 ctx.fireExceptionCaught(t);
             }
         }
+    }
+
+    private void failPendingWrites(Throwable cause) {
+        PendingWrite pendingWrite;
+        while ((pendingWrite = pendingWrites.poll()) != null) {
+            pendingWrite.promise.tryFailure(cause);
+            ReferenceCountUtil.safeRelease(pendingWrite.packet);
+        }
+    }
+
+    private void sendCapabilities(ChannelHandlerContext ctx, boolean flush) {
+        if (localCapabilitiesSent) {
+            return;
+        }
+        final ByteBuf payload = CausalTransportProtocol.encodeCapabilities(
+                ctx.alloc(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        FrameData frameData = null;
+        try {
+            frameData = FrameData.create(
+                    ctx.alloc(),
+                    Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID,
+                    payload
+            );
+            frameData.setOrderChannel(7);
+            localCapabilitiesSent = true;
+            final ChannelFuture writeFuture = flush
+                    ? ctx.writeAndFlush(frameData)
+                    : ctx.write(frameData);
+            frameData = null;
+            writeFuture.addListener(future -> {
+                if (!future.isSuccess()) {
+                    localCapabilitiesSent = false;
+                }
+            });
+        } finally {
+            payload.release();
+            ReferenceCountUtil.safeRelease(frameData);
+        }
+    }
+
+    public boolean isAtomicBundleEnabled() {
+        return isMultichannelEnabled && isAtomicBundleNegotiated();
+    }
+
+    private boolean isAtomicBundleNegotiated() {
+        return localCapabilitiesSent
+                && (remoteCapabilities & CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE) != 0;
     }
 
     protected boolean isMultichannelAvailable() {
@@ -197,13 +339,23 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     protected int getChannelOverride(ByteBuf buf, boolean suppressWarning) {
+        return getOverrideResult(buf, suppressWarning).channel();
+    }
+
+    protected OverrideResult getOverrideResult(ByteBuf buf, boolean suppressWarning) {
+        OverrideResult firstMatch = OverrideResult.pass();
         synchronized (handlers) {
             for (OverrideHandler handler : handlers) {
                 final OverrideResult override = handler.getChannelOverride(buf, suppressWarning);
-                if (override.matched()) return override.channel();
+                if (override.isBundleDelimiter()) {
+                    return override;
+                }
+                if (!firstMatch.matched() && override.matched()) {
+                    firstMatch = override;
+                }
             }
         }
-        return 0;
+        return firstMatch.matched() ? firstMatch : OverrideResult.route(0);
     }
 
     @Override
@@ -211,7 +363,22 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         if (msg instanceof FrameData packet && !packet.isFragment() && packet.getDataSize() > 0) {
             try {
                 if (packetId == packet.getPacketId()) {
-                    ctx.fireChannelRead(packet.createData().skipBytes(1));
+                    final ByteBuf payload = packet.createData().skipBytes(1);
+                    if (isAtomicBundleNegotiated() && CausalTransportProtocol.isAtomicBundle(payload)) {
+                        if (!packet.getReliability().isReliable
+                                || !packet.getReliability().isOrdered
+                                || packet.getOrderChannel() != 7) {
+                            payload.release();
+                            throw new CorruptedFrameException(
+                                    "Atomic bundle was not delivered on reliable ordered channel 7"
+                            );
+                        }
+                        fireAtomicBundle(ctx, payload);
+                    } else {
+                        ctx.fireChannelRead(payload);
+                    }
+                } else if (packet.getPacketId() == Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID) {
+                    handleCapabilities(ctx, packet);
                 } else if (packet.getPacketId() == Constants.RAKNET_PING_PACKET_ID) {
                     return;
                 } else {
@@ -225,16 +392,41 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         super.channelRead(ctx, msg);
     }
 
-    protected void decode(ChannelHandlerContext ctx, FrameData packet, List<Object> out) {
-        assert !packet.isFragment();
-        if (packet.getDataSize() > 0) {
-            if (packetId == packet.getPacketId()) {
-                out.add(packet.createData().skipBytes(1));
-            } else if (packet.getPacketId() == Constants.RAKNET_PING_PACKET_ID) {
-                return;
-            } else {
-                out.add(packet.retain());
+    private void handleCapabilities(ChannelHandlerContext ctx, FrameData packet) {
+        if (!packet.getReliability().isReliable
+                || !packet.getReliability().isOrdered
+                || packet.getOrderChannel() != 7) {
+            throw new CorruptedFrameException(
+                    "Causal capabilities were not delivered on reliable ordered channel 7"
+            );
+        }
+        final ByteBuf payload = packet.createData().skipBytes(1);
+        try {
+            final CausalTransportProtocol.Capabilities capabilities =
+                    CausalTransportProtocol.decodeCapabilities(payload);
+            remoteCapabilities = capabilities.version() == CausalTransportProtocol.VERSION
+                    ? capabilities.capabilities() & CausalTransportProtocol.LOCAL_CAPABILITIES
+                    : 0L;
+            sendCapabilities(ctx, true);
+        } finally {
+            payload.release();
+        }
+    }
+
+    private void fireAtomicBundle(ChannelHandlerContext ctx, ByteBuf payload) {
+        final List<ByteBuf> packets;
+        try {
+            packets = CausalTransportProtocol.decodeAtomicBundle(payload);
+        } finally {
+            payload.release();
+        }
+        try {
+            for (int i = 0; i < packets.size(); i++) {
+                final ByteBuf packet = packets.set(i, null);
+                ctx.fireChannelRead(packet);
             }
+        } finally {
+            packets.forEach(ReferenceCountUtil::safeRelease);
         }
     }
 
@@ -244,13 +436,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     /**
      * Separates an explicit channel-zero decision from a handler that did not
-     * recognize the packet. The old integer API used zero for both meanings,
-     * which made conservative fallback policies dependent on handler order.
+     * recognize the packet, and identifies bundle delimiters as protocol
+     * boundaries rather than disposable packets.
      */
     public record OverrideResult(boolean matched, int channel) {
 
         private static final OverrideResult PASS = new OverrideResult(false, 0);
-        private static final OverrideResult DISCARD = new OverrideResult(true, Integer.MIN_VALUE);
+        private static final OverrideResult BUNDLE_DELIMITER =
+                new OverrideResult(true, Integer.MIN_VALUE);
         private static final OverrideResult RELIABLE_UNORDERED = new OverrideResult(true, -1);
         private static final OverrideResult UNRELIABLE = new OverrideResult(true, -2);
         private static final OverrideResult[] ORDERED = new OverrideResult[]{
@@ -268,9 +461,17 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return PASS;
         }
 
+        public static OverrideResult bundleDelimiter() {
+            return BUNDLE_DELIMITER;
+        }
+
+        public boolean isBundleDelimiter() {
+            return matched && channel == Integer.MIN_VALUE;
+        }
+
         public static OverrideResult route(int channel) {
             if (channel >= 0 && channel < ORDERED.length) return ORDERED[channel];
-            if (channel == Integer.MIN_VALUE) return DISCARD;
+            if (channel == Integer.MIN_VALUE) return BUNDLE_DELIMITER;
             if (channel == -1) return RELIABLE_UNORDERED;
             if (channel == -2) return UNRELIABLE;
             return new OverrideResult(true, channel);
@@ -305,7 +506,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
     }
 
-    private record PendingWrite(FrameData frameData, ChannelPromise promise) {
+    private record PendingWrite(ByteBuf packet, ChannelPromise promise) {
+    }
+
+    private record PendingControlWrite(Object message, ChannelPromise promise) {
     }
 
 }

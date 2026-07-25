@@ -27,6 +27,8 @@ package com.ishland.raknetify.common.connection.multichannel;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -48,6 +50,22 @@ class MultichannelPolicyTest {
         final var result = handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true);
 
         assertFalse(result.matched());
+    }
+
+    @Test
+    void aggressiveProfileStaysStrictUntilAtomicBundlesAreReady() {
+        final AtomicBoolean ready = new AtomicBoolean();
+        final var handler = MultichannelPolicy.profileHandler(
+                MultichannelPolicy.Profile.AGGRESSIVE,
+                ready::get
+        );
+
+        final var fallback = handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true);
+        assertTrue(fallback.matched());
+        assertEquals(MultichannelPolicy.STRICT_GAME_CHANNEL, fallback.channel());
+
+        ready.set(true);
+        assertFalse(handler.getChannelOverride(Unpooled.EMPTY_BUFFER, true).matched());
     }
 
     @Test
