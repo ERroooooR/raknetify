@@ -419,7 +419,7 @@ public class RakNetMultiChannel {
     public static int getPacketChannelOverride(Class<?> clazz, boolean suppressWarning) {
         if (clazz == null) {
             System.err.println("Raknetify: Warning: Tried to send packet without setting packet class");
-            return 0;
+            return 7;
         }
         int channelOverride = classToChannelIdOverride.getInt(clazz);
         if (channelOverride == Integer.MAX_VALUE) {

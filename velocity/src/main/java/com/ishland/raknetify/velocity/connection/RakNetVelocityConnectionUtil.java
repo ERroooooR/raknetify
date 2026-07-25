@@ -58,7 +58,7 @@ public class RakNetVelocityConnectionUtil {
             final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
             multiChannelCodec.addHandler((buf, suppressWarning) ->
                     channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null
-                            ? RakNetSimpleMultiChannelCodec.OverrideResult.route(7)
+                            ? RakNetSimpleMultiChannelCodec.OverrideResult.strict()
                             : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);

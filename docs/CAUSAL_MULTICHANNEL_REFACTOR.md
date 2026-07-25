@@ -87,6 +87,14 @@ that domain deliberately shares the strict scheduling queue and channel 7: it is
 separately, yet cannot overtake entity or block-entity state until an epoch-aware chunk commit
 dependency is implemented.
 
+Strict classification is a safety veto across all registered classifiers. A platform adapter or
+external batch/compression detector may match first, but a later custom-payload or unknown-packet
+classifier can still force the frame back to `STRICT_WORLD`. Proxy packet-ID maps explicitly set
+their copied fastutil map's absent-key value: an unmapped protocol ID can no longer silently inherit
+Java's integer zero and be mistaken for legacy order channel 0. ZSTD frames whose original packet
+boundaries have already been aggregated are also explicitly strict instead of being expressed as a
+legacy channel preference.
+
 A work-conserving deficit round-robin scheduler runs before RakNet fragmentation and reliability.
 It uses a 4:2:1 byte quantum for strict, independent-control and effect queues, while retaining FIFO
 within each queue. Strict world and guarded bulk share one FIFO. The old reflection-based

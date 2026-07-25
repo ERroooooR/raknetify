@@ -67,7 +67,7 @@ public class RakNetFabricConnectionUtil {
             // original packet boundaries are no longer available for prioritizing.
             multiChannelCodec.addHandler((buf, suppressWarning) ->
                     channel.pipeline().get("zstd_encoder") != null
-                            ? RakNetSimpleMultiChannelCodec.OverrideResult.route(7)
+                            ? RakNetSimpleMultiChannelCodec.OverrideResult.strict()
                             : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);

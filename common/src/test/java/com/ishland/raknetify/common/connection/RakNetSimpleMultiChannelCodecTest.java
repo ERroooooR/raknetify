@@ -31,6 +31,7 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.util.ReferenceCountUtil;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
@@ -69,6 +70,30 @@ class RakNetSimpleMultiChannelCodecTest {
                 RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter());
 
         assertEquals(Integer.MIN_VALUE, codec.classify());
+    }
+
+    @Test
+    void strictDecisionOutranksAnEarlierOptimisticRoute() {
+        final TestCodec codec = new TestCodec();
+        codec.addHandler((buf, suppressWarning) -> RakNetSimpleMultiChannelCodec.OverrideResult.route(4));
+        codec.addHandler((buf, suppressWarning) -> RakNetSimpleMultiChannelCodec.OverrideResult.strict());
+
+        assertEquals(7, codec.classify());
+    }
+
+    @Test
+    void absentPacketIdIsStrictInsteadOfImplicitChannelZero() {
+        final Int2IntOpenHashMap mapping = new Int2IntOpenHashMap();
+        mapping.put(1, 4);
+
+        final TestCodec codec = new TestCodec();
+        codec.addHandler(new RakNetSimpleMultiChannelCodec.PacketIdBasedOverrideHandler(
+                mapping,
+                "test"
+        ));
+
+        assertEquals(7, codec.classify(2));
+        assertEquals(4, codec.classify(1));
     }
 
     @Test
@@ -486,8 +511,20 @@ class RakNetSimpleMultiChannelCodecTest {
         }
 
         private int classify() {
-            final ByteBuf packet = Unpooled.buffer(1).writeByte(0);
+            return classify(0);
+        }
+
+        private int classify(int packetId) {
+            final ByteBuf packet = Unpooled.buffer(5);
             try {
+                do {
+                    int part = packetId & 0x7F;
+                    packetId >>>= 7;
+                    if (packetId != 0) {
+                        part |= 0x80;
+                    }
+                    packet.writeByte(part);
+                } while (packetId != 0);
                 return getChannelOverride(packet, true);
             } finally {
                 packet.release();

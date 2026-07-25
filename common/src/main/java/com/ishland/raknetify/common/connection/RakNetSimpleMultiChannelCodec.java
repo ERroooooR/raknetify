@@ -592,6 +592,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 if (override.isBundleDelimiter()) {
                     return override;
                 }
+                // Strict is a safety veto, not an ordinary route preference.
+                // This makes custom payload and unknown-packet handling robust
+                // against platform-specific handler registration order.
+                if (override.isStrict()) {
+                    return override;
+                }
                 if (!firstMatch.matched() && override.matched()) {
                     firstMatch = override;
                 }
@@ -988,6 +994,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
         private static final OverrideResult PASS =
                 new OverrideResult(false, 0, DependencyDomain.STRICT_WORLD);
+        private static final OverrideResult STRICT =
+                new OverrideResult(
+                        true,
+                        MultichannelPolicy.STRICT_GAME_CHANNEL,
+                        DependencyDomain.STRICT_WORLD
+                );
         private static final OverrideResult BUNDLE_DELIMITER =
                 new OverrideResult(
                         true,
@@ -1014,11 +1026,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
 
         public static OverrideResult strict() {
-            return new OverrideResult(
-                    true,
-                    MultichannelPolicy.STRICT_GAME_CHANNEL,
-                    DependencyDomain.STRICT_WORLD
-            );
+            return STRICT;
         }
 
         public static OverrideResult classify(
@@ -1029,7 +1037,11 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
 
         public boolean isBundleDelimiter() {
-            return matched && channel == Integer.MIN_VALUE;
+            return this == BUNDLE_DELIMITER;
+        }
+
+        public boolean isStrict() {
+            return this == STRICT;
         }
 
         public static OverrideResult route(int channel) {
@@ -1055,6 +1067,11 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
         public PacketIdBasedOverrideHandler(Int2IntMap channelMapping, String descriptiveProtocolStatus) {
             this.channelMapping = new Int2IntOpenHashMap(channelMapping);
+            // Fastutil copy constructors do not preserve the source map's
+            // default return value. Zero is a valid order channel, so leaving
+            // the copied map at its implicit zero default silently classifies
+            // every absent packet ID as channel 0.
+            this.channelMapping.defaultReturnValue(Integer.MAX_VALUE);
             this.descriptiveProtocolStatus = descriptiveProtocolStatus;
         }
 
@@ -1069,7 +1086,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                         System.err.println("Raknetify: Unknown packet id %d for %s".formatted(packetId, descriptiveProtocolStatus));
                     }
                 }
-                return OverrideResult.route(7);
+                return OverrideResult.strict();
             }
             return OverrideResult.route(override);
         }
