@@ -174,6 +174,98 @@ class SynchronizationLayerTest {
         assertFalse(channel.finishAndReleaseAll());
     }
 
+    @Test
+    void inboundFenceMustUseTheExactLocalChannelMask() {
+        final EmbeddedChannel channel = channel(new EventCapture());
+
+        assertThrows(
+                CorruptedFrameException.class,
+                () -> channel.writeInbound(fenceRequest(
+                        channel,
+                        1,
+                        1,
+                        0x7f,
+                        0
+                ))
+        );
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void inboundFenceIdsCannotInterleaveOrBeReusedForAnotherEpoch() {
+        final EmbeddedChannel interleaved = channel(new EventCapture());
+        assertFalse(interleaved.writeInbound(fenceRequest(
+                interleaved,
+                1,
+                1,
+                0xff,
+                0
+        )));
+        assertThrows(
+                CorruptedFrameException.class,
+                () -> interleaved.writeInbound(fenceRequest(
+                        interleaved,
+                        2,
+                        1,
+                        0xff,
+                        1
+                ))
+        );
+        assertFalse(interleaved.finishAndReleaseAll());
+
+        final EmbeddedChannel reused = channel(new EventCapture());
+        for (int orderChannel = 0;
+             orderChannel < CausalFenceProtocol.ORDER_CHANNEL_COUNT;
+             orderChannel++) {
+            assertFalse(reused.writeInbound(fenceRequest(
+                    reused,
+                    1,
+                    1,
+                    0xff,
+                    orderChannel
+            )));
+        }
+        ReferenceCountUtil.safeRelease(reused.readOutbound());
+        assertThrows(
+                CorruptedFrameException.class,
+                () -> reused.writeInbound(fenceRequest(
+                        reused,
+                        1,
+                        2,
+                        0xff,
+                        0
+                ))
+        );
+        assertFalse(reused.finishAndReleaseAll());
+    }
+
+    private static FrameData fenceRequest(
+            EmbeddedChannel channel,
+            long fenceId,
+            int epoch,
+            int channelMask,
+            int orderChannel
+    ) {
+        final ByteBuf payload = CausalFenceProtocol.encodeRequest(
+                channel.alloc(),
+                fenceId,
+                epoch,
+                channelMask
+        );
+        final FrameData request;
+        try {
+            request = FrameData.create(
+                    channel.alloc(),
+                    Constants.RAKNET_SYNC_PACKET_ID,
+                    payload
+            );
+            request.setOrderChannel(orderChannel);
+        } finally {
+            payload.release();
+        }
+        return request;
+    }
+
     private static EmbeddedChannel channel(EventCapture capture) {
         final EmbeddedChannel channel = new EmbeddedChannel(
                 new SynchronizationLayer(),

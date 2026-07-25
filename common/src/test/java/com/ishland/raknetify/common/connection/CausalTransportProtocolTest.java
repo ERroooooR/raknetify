@@ -171,6 +171,40 @@ class CausalTransportProtocolTest {
         }
     }
 
+    @Test
+    void epochHeaderRejectsUnknownTypesAndTruncationBeforeQueueing() {
+        final ByteBuf packet = Unpooled.wrappedBuffer(new byte[]{5});
+        final ByteBuf encoded = CausalTransportProtocol.encodeGameplayFrame(
+                UnpooledByteBufAllocator.DEFAULT,
+                1,
+                packet
+        );
+        final ByteBuf truncated = encoded.retainedSlice(
+                encoded.readerIndex(),
+                7
+        );
+        try {
+            assertThrows(
+                    CorruptedFrameException.class,
+                    () -> CausalTransportProtocol.peekGameplayEpoch(truncated)
+            );
+
+            encoded.setByte(encoded.readerIndex() + 6, 99);
+            assertThrows(
+                    CorruptedFrameException.class,
+                    () -> CausalTransportProtocol.peekGameplayEpoch(encoded)
+            );
+            assertThrows(
+                    CorruptedFrameException.class,
+                    () -> CausalTransportProtocol.decodeGameplayFrame(encoded)
+            );
+        } finally {
+            truncated.release();
+            encoded.release();
+            packet.release();
+        }
+    }
+
     private static byte[] bytes(ByteBuf buffer) {
         final byte[] bytes = new byte[buffer.readableBytes()];
         buffer.getBytes(buffer.readerIndex(), bytes);

@@ -116,6 +116,9 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private boolean isMultichannelEnabled;
     private boolean localCapabilitiesSent;
+    private boolean remoteCapabilitiesReceived;
+    private int remoteCapabilityVersion;
+    private long remoteAdvertisedCapabilities;
     private long remoteCapabilities;
     private boolean waitingForEpochFence;
     private int outboundEpoch;
@@ -742,6 +745,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                     } else if (isGameplayEpochNegotiated() && inboundEpoch > 0) {
                         // A completed drain fence proves that no unframed packet
                         // from the previous epoch may still be valid.
+                        final SimpleMetricsLogger metrics = metrics(ctx);
+                        if (metrics != null) {
+                            metrics.causalStaleFrameDropped();
+                        }
                         payload.release();
                     } else if (isAtomicBundleNegotiated()
                             && CausalTransportProtocol.isAtomicBundle(payload)) {
@@ -784,6 +791,20 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         try {
             final CausalTransportProtocol.Capabilities capabilities =
                     CausalTransportProtocol.decodeCapabilities(payload);
+            if (remoteCapabilitiesReceived) {
+                if (capabilities.version() != remoteCapabilityVersion
+                        || capabilities.capabilities()
+                        != remoteAdvertisedCapabilities) {
+                    throw new CorruptedFrameException(
+                            "Causal capabilities changed after negotiation"
+                    );
+                }
+                sendCapabilities(ctx, true);
+                return;
+            }
+            remoteCapabilitiesReceived = true;
+            remoteCapabilityVersion = capabilities.version();
+            remoteAdvertisedCapabilities = capabilities.capabilities();
             remoteCapabilities = capabilities.version() == CausalTransportProtocol.VERSION
                     ? CausalTransportProtocol.negotiateCapabilities(capabilities.capabilities())
                     : 0L;
@@ -825,6 +846,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return;
         }
         if (epoch > inboundEpoch) {
+            if (inboundEpoch == Integer.MAX_VALUE
+                    || epoch != inboundEpoch + 1) {
+                payload.release();
+                throw new CorruptedFrameException(
+                        "Inbound gameplay epoch skipped from "
+                                + inboundEpoch + " to " + epoch
+                );
+            }
             if (pendingInboundEpochFrames.size()
                     >= CausalTransportProtocol.MAX_ATOMIC_BUNDLE_PACKETS
                     || payload.readableBytes() > Constants.MAX_QUEUED_SIZE - pendingInboundEpochBytes) {

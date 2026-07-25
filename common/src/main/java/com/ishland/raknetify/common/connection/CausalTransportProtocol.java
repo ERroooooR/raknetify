@@ -244,17 +244,13 @@ public final class CausalTransportProtocol {
 
     public static int peekGameplayEpoch(ByteBuf payload) {
         final ByteBuf duplicate = payload.duplicate();
-        requireEpochGameplayFrame(duplicate);
-        duplicate.skipBytes(BUNDLE_MARKER.length + 2);
-        return readNonNegativeVarInt(duplicate, "gameplay epoch");
+        return readEpochHeader(duplicate).epoch();
     }
 
     public static GameplayFrame decodeGameplayFrame(ByteBuf payload) {
-        requireEpochGameplayFrame(payload);
-        payload.skipBytes(BUNDLE_MARKER.length);
-        payload.readUnsignedByte(); // version
-        final int type = payload.readUnsignedByte();
-        final int epoch = readNonNegativeVarInt(payload, "gameplay epoch");
+        final EpochHeader header = readEpochHeader(payload);
+        final int type = header.type();
+        final int epoch = header.epoch();
         if (type == EPOCH_FRAME_SINGLE) {
             if (!payload.isReadable()) {
                 throw new CorruptedFrameException("Empty causal gameplay frame");
@@ -320,6 +316,25 @@ public final class CausalTransportProtocol {
         }
     }
 
+    private static EpochHeader readEpochHeader(ByteBuf payload) {
+        requireEpochGameplayFrame(payload);
+        if (payload.readableBytes() < BUNDLE_MARKER.length + 3) {
+            throw new CorruptedFrameException("Truncated causal gameplay frame header");
+        }
+        payload.skipBytes(BUNDLE_MARKER.length);
+        payload.readUnsignedByte(); // version, checked by requireEpochGameplayFrame
+        final int type = payload.readUnsignedByte();
+        if (type != EPOCH_FRAME_SINGLE && type != EPOCH_FRAME_BUNDLE) {
+            throw new CorruptedFrameException(
+                    "Unknown causal gameplay frame type: " + type
+            );
+        }
+        return new EpochHeader(
+                type,
+                readNonNegativeVarInt(payload, "gameplay epoch")
+        );
+    }
+
     private static int readNonNegativeVarInt(ByteBuf payload, String description) {
         final int value;
         try {
@@ -343,6 +358,9 @@ public final class CausalTransportProtocol {
     }
 
     public record GameplayFrame(int epoch, boolean atomicBundle, List<ByteBuf> packets) {
+    }
+
+    private record EpochHeader(int type, int epoch) {
     }
 
 }

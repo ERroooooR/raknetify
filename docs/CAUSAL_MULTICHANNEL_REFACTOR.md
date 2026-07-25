@@ -62,6 +62,12 @@ the gate. The legacy reflection path that cleared `ReliabilityHandler` queues, r
 indices and completed dropped frame promises has been removed. Peers without the negotiated fence
 capability keep their existing ordered traffic instead of invoking that lossy fallback.
 
+The receiver accepts exactly one inbound fence at a time, requires its channel mask to match the
+locally active order channels, and rejects interleaved IDs or reuse of a completed ID for another
+epoch. Capability advertisements become immutable after the first valid control frame. A
+future-epoch gameplay frame may target only `current + 1`; malformed/truncated headers, unknown
+frame types and larger epoch skips are rejected before they can enter a retained queue.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -118,6 +124,9 @@ Automated verification now:
 - Exercises byte/count overflow independently at the application, bundle-control, transport-fence
   and dependency-domain scheduler hold points, asserting that every promise fails and every
   reference-counted message is released.
+- Injects conflicting capability advertisements, incomplete/unknown epoch headers, skipped future
+  epochs, incomplete channel masks, interleaved fence IDs and completed-ID reuse, requiring every
+  malformed transition to fail before state is committed or memory is retained.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet
