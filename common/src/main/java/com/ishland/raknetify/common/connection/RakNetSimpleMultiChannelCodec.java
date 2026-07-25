@@ -57,6 +57,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private final int packetId;
     private final BoundedPendingWriteQueue pendingWrites;
     private final BoundedPendingWriteQueue pendingControlWrites;
+    private final DependencyDomainScheduler<ScheduledWrite> domainScheduler;
 
     public RakNetSimpleMultiChannelCodec(int packetId) {
         this(
@@ -80,6 +81,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 maxPendingWriteBytes
         );
         this.pendingControlWrites = new BoundedPendingWriteQueue(
+                maxPendingWrites,
+                maxPendingWriteBytes
+        );
+        this.domainScheduler = new DependencyDomainScheduler<>(
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
@@ -119,8 +124,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private boolean queuePendingWrites = false;
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
     private final Queue<PendingInboundEpochFrame> pendingInboundEpochFrames = new LinkedList<>();
-    private final DependencyDomainScheduler<ScheduledWrite> domainScheduler =
-            new DependencyDomainScheduler<>();
     private int pendingInboundEpochBytes;
     private boolean domainDrainScheduled;
 
@@ -612,7 +615,29 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
 
         final int bytes = frameData.getDataSize();
-        domainScheduler.offer(domain, new ScheduledWrite(frameData, promise, bytes), bytes);
+        if (!domainScheduler.offer(
+                domain,
+                new ScheduledWrite(frameData, promise, bytes),
+                bytes
+        )) {
+            final CorruptedFrameException exception = new CorruptedFrameException(
+                    "Dependency-domain scheduler exceeded its bound "
+                            + "(frames=" + domainScheduler.size()
+                            + ", bytes=" + domainScheduler.bytes() + ")"
+            );
+            promise.tryFailure(exception);
+            ReferenceCountUtil.safeRelease(frameData);
+            final SimpleMetricsLogger metrics = metrics(ctx);
+            if (metrics != null) {
+                metrics.causalOutboundQueueOverflow(
+                        SimpleMetricsLogger.CausalOutboundQueue.DOMAIN_SCHEDULER
+                );
+            }
+            failScheduledWrites(ctx, exception);
+            ctx.fireExceptionCaught(exception);
+            ctx.close();
+            return;
+        }
         recordDomainQueued(ctx, domain, bytes);
         if (!domainDrainScheduled) {
             domainDrainScheduled = true;
@@ -637,7 +662,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 recordDomainDiscarded(ctx, scheduled.domain(), write.bytes);
                 ReferenceCountUtil.safeRelease(write.frameData);
                 write.promise.tryFailure(throwable);
+                failScheduledWrites(ctx, throwable);
                 ctx.fireExceptionCaught(throwable);
+                ctx.close();
+                return;
             }
         }
     }

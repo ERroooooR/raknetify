@@ -105,13 +105,19 @@ Automated verification now:
   Transition wait queues preserve the original order of control and gameplay writes. Completed
   ACK state is detached before callbacks can start the next fence, and fence markers/ACKs are
   explicitly flushed so a re-entrant transition cannot stall behind an already completed flush.
-- Uses one reference-count-safe bounded queue implementation for all three outbound causal hold
-  points: application writes waiting for an epoch ACK, control signals waiting for an atomic
-  bundle to close, and transport writes waiting behind the eight-channel fence. Each queue is
-  bounded to 16,384 writes and 256 MiB. Overflow fails every held promise, releases every retained
-  message and closes the connection instead of allowing a lost ACK or delimiter to create
-  unbounded memory growth. JSONL metrics expose aggregate and per-queue counts; the acceptance
-  verifier requires that no queue overflows and their aggregate settled depth is zero.
+- Uses explicit ownership accounting and the same fail-closed bound for all four outbound causal
+  hold points: application writes waiting for an epoch ACK, control signals waiting for an atomic
+  bundle to close, transport writes waiting behind the eight-channel fence, and frames waiting in
+  the dependency-domain DRR scheduler. The first three share one reference-count-safe queue
+  implementation; the scheduler preserves its per-domain FIFO while applying identical capacity
+  accounting. Each queue is bounded to 16,384 writes and 256 MiB. Overflow fails every held
+  promise, releases every retained message and closes the connection instead of allowing a lost
+  ACK, delimiter or event-loop stall to create unbounded memory growth. JSONL metrics expose
+  aggregate and per-queue counts; the acceptance verifier requires that no queue overflows and
+  their aggregate settled depth is zero.
+- Exercises byte/count overflow independently at the application, bundle-control, transport-fence
+  and dependency-domain scheduler hold points, asserting that every promise fails and every
+  reference-counted message is released.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet

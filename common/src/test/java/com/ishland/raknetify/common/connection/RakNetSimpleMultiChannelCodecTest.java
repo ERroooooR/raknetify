@@ -346,6 +346,41 @@ class RakNetSimpleMultiChannelCodecTest {
         assertFalse(channel.finishAndReleaseAll());
     }
 
+    @Test
+    void overflowingDomainSchedulerFailsAndReleasesEveryScheduledWrite() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd, 2, 1024);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(-1));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ByteBuf first = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf second = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf overflow = Unpooled.buffer(2).writeZero(2);
+        final ChannelPromise firstPromise = channel.newPromise();
+        final ChannelPromise secondPromise = channel.newPromise();
+        final ChannelPromise overflowPromise = channel.newPromise();
+        channel.pipeline().write(first, firstPromise);
+        channel.pipeline().write(second, secondPromise);
+        assertFalse(firstPromise.isDone());
+        assertFalse(secondPromise.isDone());
+        channel.pipeline().write(overflow, overflowPromise);
+
+        assertThrows(CorruptedFrameException.class, channel::checkException);
+        assertTrue(firstPromise.isDone());
+        assertFalse(firstPromise.isSuccess());
+        assertTrue(secondPromise.isDone());
+        assertFalse(secondPromise.isSuccess());
+        assertTrue(overflowPromise.isDone());
+        assertFalse(overflowPromise.isSuccess());
+        assertEquals(0, first.refCnt());
+        assertEquals(0, second.refCnt());
+        assertEquals(0, overflow.refCnt());
+        channel.runPendingTasks();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
     private static void negotiateCausalCapabilities(EmbeddedChannel channel) {
         assertTrue(channel.writeOutbound(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL));
         ReferenceCountUtil.safeRelease(channel.readOutbound());

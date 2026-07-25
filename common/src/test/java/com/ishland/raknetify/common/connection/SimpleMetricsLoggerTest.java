@@ -169,21 +169,21 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"causal_outbound_epoch\":1"));
         assertTrue(line.contains("\"causal_inbound_epoch\":1"));
         assertTrue(line.contains("\"causal_stale_frames_dropped\":1"));
-        assertTrue(line.contains("\"causal_outbound_frames_queued\":2"));
+        assertTrue(line.contains("\"causal_outbound_frames_queued\":3"));
         assertTrue(line.contains("\"causal_outbound_frames_pending\":0"));
         assertTrue(line.contains("\"causal_outbound_bytes_pending\":0"));
         assertTrue(line.contains("\"causal_outbound_queue_overflows\":1"));
         assertTrue(line.contains(
-                "\"causal_outbound_frames_queued_by_queue\":[1, 0, 1]"
+                "\"causal_outbound_frames_queued_by_queue\":[1, 0, 1, 1]"
         ));
         assertTrue(line.contains(
-                "\"causal_outbound_frames_pending_by_queue\":[0, 0, 0]"
+                "\"causal_outbound_frames_pending_by_queue\":[0, 0, 0, 0]"
         ));
         assertTrue(line.contains(
-                "\"causal_outbound_bytes_pending_by_queue\":[0, 0, 0]"
+                "\"causal_outbound_bytes_pending_by_queue\":[0, 0, 0, 0]"
         ));
         assertTrue(line.contains(
-                "\"causal_outbound_queue_overflows_by_queue\":[0, 1, 0]"
+                "\"causal_outbound_queue_overflows_by_queue\":[0, 1, 0, 0]"
         ));
         assertTrue(line.contains("\"causal_future_frames_queued\":1"));
         assertTrue(line.contains("\"causal_future_frames_pending\":0"));

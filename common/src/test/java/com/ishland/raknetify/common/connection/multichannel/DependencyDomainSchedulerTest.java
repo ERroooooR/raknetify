@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DependencyDomainSchedulerTest {
@@ -48,5 +49,36 @@ class DependencyDomainSchedulerTest {
         assertTrue(firstSix.contains("control-1"));
         assertTrue(firstSix.contains("effect-0"));
         assertTrue(firstSix.indexOf("control-0") < firstSix.indexOf("control-1"));
+    }
+
+    @Test
+    void capacityFailureDoesNotTakeOwnershipOrCorruptAccounting() {
+        final DependencyDomainScheduler<String> scheduler =
+                new DependencyDomainScheduler<>(2, 10);
+
+        assertTrue(scheduler.offer(
+                DependencyDomain.STRICT_WORLD,
+                "world",
+                6
+        ));
+        assertTrue(scheduler.offer(
+                DependencyDomain.INDEPENDENT_CONTROL,
+                "control",
+                4
+        ));
+        assertFalse(scheduler.offer(
+                DependencyDomain.EPHEMERAL_EFFECT,
+                "overflow",
+                1
+        ));
+        assertEquals(2, scheduler.size());
+        assertEquals(10, scheduler.bytes());
+
+        scheduler.poll();
+        assertEquals(1, scheduler.size());
+        assertTrue(scheduler.bytes() == 4 || scheduler.bytes() == 6);
+        scheduler.poll();
+        assertEquals(0, scheduler.size());
+        assertEquals(0, scheduler.bytes());
     }
 }

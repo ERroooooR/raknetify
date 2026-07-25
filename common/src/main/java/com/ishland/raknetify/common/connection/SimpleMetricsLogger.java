@@ -424,6 +424,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         dependencyDomainQueuedBytes[index] += bytes;
         dependencyDomainPendingFrames[index]++;
         dependencyDomainPendingBytes[index] += bytes;
+        causalOutboundFrameQueuedLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
+        );
     }
 
     public synchronized void dependencyDomainSent(
@@ -441,6 +446,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 0,
                 dependencyDomainPendingBytes[index] - bytes
         );
+        causalOutboundQueueStateLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
+        );
     }
 
     public synchronized void dependencyDomainDiscarded(
@@ -455,6 +465,11 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         dependencyDomainPendingBytes[index] = Math.max(
                 0,
                 dependencyDomainPendingBytes[index] - bytes
+        );
+        causalOutboundQueueStateLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
         );
     }
 
@@ -486,12 +501,28 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             int framesPending,
             long bytesPending
     ) {
+        causalOutboundFrameQueuedLocked(queue, framesPending, bytesPending);
+    }
+
+    private void causalOutboundFrameQueuedLocked(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
         causalOutboundFramesQueued++;
         causalOutboundFramesQueuedByQueue[queue.ordinal()]++;
-        causalOutboundQueueState(queue, framesPending, bytesPending);
+        causalOutboundQueueStateLocked(queue, framesPending, bytesPending);
     }
 
     public synchronized void causalOutboundQueueState(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundQueueStateLocked(queue, framesPending, bytesPending);
+    }
+
+    private void causalOutboundQueueStateLocked(
             CausalOutboundQueue queue,
             int framesPending,
             long bytesPending
@@ -500,12 +531,32 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Math.max(0, framesPending);
         causalOutboundBytesPendingByQueue[queue.ordinal()] =
                 Math.max(0L, bytesPending);
-        causalOutboundFramesPending = Arrays.stream(
-                causalOutboundFramesPendingByQueue
-        ).sum();
-        causalOutboundBytesPending = Arrays.stream(
-                causalOutboundBytesPendingByQueue
-        ).sum();
+        int totalFrames = 0;
+        long totalBytes = 0L;
+        for (int value : causalOutboundFramesPendingByQueue) {
+            totalFrames += value;
+        }
+        for (long value : causalOutboundBytesPendingByQueue) {
+            totalBytes += value;
+        }
+        causalOutboundFramesPending = totalFrames;
+        causalOutboundBytesPending = totalBytes;
+    }
+
+    private int dependencyDomainPendingFramesTotal() {
+        long total = 0L;
+        for (long value : dependencyDomainPendingFrames) {
+            total += value;
+        }
+        return (int) Math.min(Integer.MAX_VALUE, total);
+    }
+
+    private long dependencyDomainPendingBytesTotal() {
+        long total = 0L;
+        for (long value : dependencyDomainPendingBytes) {
+            total += value;
+        }
+        return total;
     }
 
     public synchronized void causalOutboundQueueOverflow(
@@ -1097,7 +1148,7 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"causal_outbound_frames_pending\":%d," +
                         "\"causal_outbound_bytes_pending\":%d," +
                         "\"causal_outbound_queue_overflows\":%d," +
-                        "\"causal_outbound_queue_names\":[\"APPLICATION\",\"BUNDLE_CONTROL\",\"FENCE\"]," +
+                        "\"causal_outbound_queue_names\":[\"APPLICATION\",\"BUNDLE_CONTROL\",\"FENCE\",\"DOMAIN_SCHEDULER\"]," +
                         "\"causal_outbound_frames_queued_by_queue\":%s," +
                         "\"causal_outbound_frames_pending_by_queue\":%s," +
                         "\"causal_outbound_bytes_pending_by_queue\":%s," +
@@ -1495,7 +1546,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public enum CausalOutboundQueue {
         APPLICATION,
         BUNDLE_CONTROL,
-        FENCE
+        FENCE,
+        DOMAIN_SCHEDULER
     }
 
     private record CausalOutboundQueueSnapshot(

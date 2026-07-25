@@ -21,10 +21,22 @@ public final class DependencyDomainScheduler<T> {
             new EnumMap<>(DependencyDomain.SchedulingClass.class);
     private final EnumMap<DependencyDomain.SchedulingClass, Integer> deficits =
             new EnumMap<>(DependencyDomain.SchedulingClass.class);
+    private final int maxEntries;
+    private final long maxBytes;
     private int nextClass;
     private int size;
+    private long bytes;
 
     public DependencyDomainScheduler() {
+        this(Integer.MAX_VALUE, Long.MAX_VALUE);
+    }
+
+    public DependencyDomainScheduler(int maxEntries, long maxBytes) {
+        if (maxEntries <= 0 || maxBytes <= 0L) {
+            throw new IllegalArgumentException("Scheduler limits must be positive");
+        }
+        this.maxEntries = maxEntries;
+        this.maxBytes = maxBytes;
         for (DependencyDomain.SchedulingClass schedulingClass
                 : DependencyDomain.SchedulingClass.values()) {
             queues.put(schedulingClass, new ArrayDeque<>());
@@ -32,14 +44,24 @@ public final class DependencyDomainScheduler<T> {
         }
     }
 
-    public void offer(DependencyDomain domain, T value, int bytes) {
+    public boolean offer(DependencyDomain domain, T value, int bytes) {
         if (bytes < 0) {
             throw new IllegalArgumentException("bytes must be non-negative");
         }
+        if (size >= maxEntries || bytes > maxBytes - this.bytes) {
+            return false;
+        }
         queues.get(domain.schedulingClass()).addLast(
-                new Entry<>(domain, value, Math.max(1, Math.min(bytes, MAX_ACCOUNTED_BYTES)))
+                new Entry<>(
+                        domain,
+                        value,
+                        Math.max(1, Math.min(bytes, MAX_ACCOUNTED_BYTES)),
+                        bytes
+                )
         );
         size++;
+        this.bytes += bytes;
+        return true;
     }
 
     public Scheduled<T> poll() {
@@ -84,6 +106,10 @@ public final class DependencyDomainScheduler<T> {
         return size == 0;
     }
 
+    public long bytes() {
+        return bytes;
+    }
+
     private Scheduled<T> removeFirst(
             DependencyDomain.SchedulingClass schedulingClass,
             ArrayDeque<Entry<T>> queue
@@ -94,6 +120,7 @@ public final class DependencyDomainScheduler<T> {
                 deficits.get(schedulingClass) - entry.costBytes
         ));
         size--;
+        bytes -= entry.bytes;
         return new Scheduled<>(entry.domain, entry.value);
     }
 
@@ -107,7 +134,12 @@ public final class DependencyDomainScheduler<T> {
         return count;
     }
 
-    private record Entry<T>(DependencyDomain domain, T value, int costBytes) {
+    private record Entry<T>(
+            DependencyDomain domain,
+            T value,
+            int costBytes,
+            int bytes
+    ) {
     }
 
     public record Scheduled<T>(DependencyDomain domain, T value) {
