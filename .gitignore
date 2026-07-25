@@ -31,3 +31,7 @@ bin/
 # fabric
 
 run*/
+
+# proxy tests
+
+/velocity/logs/

@@ -61,10 +61,16 @@ public class RakNetVelocityChannelEventListener extends ChannelDuplexHandler {
                 return;
             }
         } else if (msg instanceof RespawnPacket || msg instanceof JoinGamePacket || msg instanceof StartUpdatePacket || msg instanceof FinishedUpdatePacket) {
-            ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT); // sync
+            // ServerConnectedEvent completes before Velocity schedules its
+            // JoinGame/Respawn switch sequence on this event loop. That path
+            // already inserted one fence for the complete synthetic sequence.
+            if (!RakNetVelocityConnectionUtil.isPreGatedServerSwitch(ctx.channel())) {
+                ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+            }
             super.write(ctx, msg, promise);
             return;
         } else if (msg instanceof AvailableCommandsPacket) {
+            RakNetVelocityConnectionUtil.completePreGatedServerSwitch(ctx.channel());
             ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
             super.write(ctx, msg, promise);
             return;

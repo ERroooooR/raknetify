@@ -75,6 +75,13 @@ do not create additional epochs while that scope is active; the Commands packet 
 at the same boundary that restarts multichannel delivery. Ordinary Respawn packets outside a
 server-switch scope still create their own fence.
 
+Velocity uses the same scoped model at its earlier `ServerConnectedEvent`, whose completion precedes
+`handleBackendJoinGame` on the client event loop. This covers both Velocity's fast switch
+(`JoinGame -> Respawn`) and legacy-Forge safe switch
+(`JoinGame -> dummy Respawn -> Respawn`) with one fence instead of two or three serialized RTTs.
+`ServerPostConnectEvent` remains responsible only for installing the backend listener after the
+join completes.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -144,6 +151,8 @@ Automated verification now:
   malformed transition to fail before state is committed or memory is retained.
 - Verifies the Bungee synthetic Login/Respawn/configuration switch sequence consumes one pre-gate,
   closes at Commands and leaves later ordinary Respawns free to request their own fence.
+- Verifies Velocity fast/safe synthetic JoinGame/Respawn/configuration sequences consume one
+  pre-gate, close at AvailableCommands and leave later ordinary Respawns independently fenced.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet
