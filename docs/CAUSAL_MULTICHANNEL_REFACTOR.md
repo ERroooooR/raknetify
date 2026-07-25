@@ -82,6 +82,14 @@ Velocity uses the same scoped model at its earlier `ServerConnectedEvent`, whose
 `ServerPostConnectEvent` remains responsible only for installing the backend listener after the
 join completes.
 
+Both proxy adapters use one Common transition-scope state machine. Opening a scope and writing its
+fence execute as one ordered client-event-loop task, rather than mutating a cross-thread boolean
+before the corresponding write is scheduled. The scope has a bounded, atomic depth so a second
+redirect may begin before the first command tree arrives without letting that first Commands packet
+reopen multichannel delivery early. Each Commands packet closes one scope; only the final close
+emits the restart barrier. A failed scope-fence write clears the state and closes the connection
+instead of leaving future transition packets permanently unfenced.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -153,6 +161,8 @@ Automated verification now:
   closes at Commands and leaves later ordinary Respawns free to request their own fence.
 - Verifies Velocity fast/safe synthetic JoinGame/Respawn/configuration sequences consume one
   pre-gate, close at AvailableCommands and leave later ordinary Respawns independently fenced.
+- Opens nested proxy transition scopes before either Commands boundary, verifies each fence is
+  preserved, and requires multichannel restart to remain suppressed until the final scope closes.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet

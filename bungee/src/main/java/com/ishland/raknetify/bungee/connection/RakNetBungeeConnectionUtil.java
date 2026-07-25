@@ -27,15 +27,14 @@ package com.ishland.raknetify.bungee.connection;
 import com.ishland.raknetify.bungee.RaknetifyBungeePlugin;
 import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
-import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
-import io.netty.util.AttributeKey;
 import net.md_5.bungee.ServerConnection;
 import net.md_5.bungee.UserConnection;
 import net.md_5.bungee.api.event.PostLoginEvent;
@@ -52,9 +51,6 @@ import java.lang.reflect.Field;
 import static com.ishland.raknetify.common.util.ReflectionUtil.accessible;
 
 public class RakNetBungeeConnectionUtil {
-
-    private static final AttributeKey<Boolean> PRE_GATED_SERVER_SWITCH =
-            AttributeKey.valueOf("raknetify:bungee-pre-gated-server-switch");
 
     private static final Field USER_CONNECTION_CH;
     private static final Field SERVER_CONNECTION_CH;
@@ -147,8 +143,7 @@ public class RakNetBungeeConnectionUtil {
 
             if (playerChannel != null && playerChannel.config() instanceof RakNet.Config config) {
                 // this exists because bungeecord sends several packets to reset state before Respawn packet during server switch
-                beginPreGatedServerSwitch(playerChannel);
-                playerChannel.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+                PreGatedTransitionScope.requestFence(playerChannel);
 
                 // and inject into the server channel
                 final ServerConnection server = (ServerConnection) evt.getServer();
@@ -158,18 +153,6 @@ public class RakNetBungeeConnectionUtil {
         } catch (Throwable t) {
             throw new RuntimeException(t);
         }
-    }
-
-    static void beginPreGatedServerSwitch(Channel channel) {
-        channel.attr(PRE_GATED_SERVER_SWITCH).set(true);
-    }
-
-    static boolean isPreGatedServerSwitch(Channel channel) {
-        return Boolean.TRUE.equals(channel.attr(PRE_GATED_SERVER_SWITCH).get());
-    }
-
-    static void completePreGatedServerSwitch(Channel channel) {
-        channel.attr(PRE_GATED_SERVER_SWITCH).set(false);
     }
 
 }

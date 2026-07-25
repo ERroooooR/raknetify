@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.bungee.connection;
 
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import io.netty.channel.embedded.EmbeddedChannel;
@@ -44,7 +45,9 @@ class RakNetBungeeClientChannelEventListenerTest {
     void onePreGateCoversTheCompleteSyntheticSwitchSequence() {
         final EmbeddedChannel channel =
                 new EmbeddedChannel(new RakNetBungeeClientChannelEventListener());
-        RakNetBungeeConnectionUtil.beginPreGatedServerSwitch(channel);
+        PreGatedTransitionScope.requestFence(channel);
+        channel.runPendingTasks();
+        assertSame(SynchronizationLayer.SYNC_REQUEST_OBJECT, channel.readOutbound());
 
         final Login login = new Login();
         final Respawn firstRespawn = new Respawn();
@@ -69,12 +72,35 @@ class RakNetBungeeClientChannelEventListenerTest {
         assertSame(finishConfiguration, channel.readOutbound());
         assertSame(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL, channel.readOutbound());
         assertSame(commands, channel.readOutbound());
-        assertFalse(RakNetBungeeConnectionUtil.isPreGatedServerSwitch(channel));
+        assertFalse(PreGatedTransitionScope.isActive(channel));
 
         final Respawn laterRespawn = new Respawn();
         assertTrue(channel.writeOutbound(laterRespawn));
         assertSame(SynchronizationLayer.SYNC_REQUEST_OBJECT, channel.readOutbound());
         assertSame(laterRespawn, channel.readOutbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void nestedSwitchesRestartOnlyAtTheLastCommandBoundary() {
+        final EmbeddedChannel channel =
+                new EmbeddedChannel(new RakNetBungeeClientChannelEventListener());
+        PreGatedTransitionScope.requestFence(channel);
+        PreGatedTransitionScope.requestFence(channel);
+        channel.runPendingTasks();
+        assertSame(SynchronizationLayer.SYNC_REQUEST_OBJECT, channel.readOutbound());
+        assertSame(SynchronizationLayer.SYNC_REQUEST_OBJECT, channel.readOutbound());
+
+        final Commands firstCommands = new Commands();
+        assertTrue(channel.writeOutbound(firstCommands));
+        assertSame(firstCommands, channel.readOutbound());
+        assertTrue(PreGatedTransitionScope.isActive(channel));
+
+        final Commands secondCommands = new Commands();
+        assertTrue(channel.writeOutbound(secondCommands));
+        assertSame(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL, channel.readOutbound());
+        assertSame(secondCommands, channel.readOutbound());
+        assertFalse(PreGatedTransitionScope.isActive(channel));
         assertFalse(channel.finishAndReleaseAll());
     }
 

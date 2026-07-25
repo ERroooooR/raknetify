@@ -23,6 +23,7 @@ package com.ishland.raknetify.velocity.connection;
 import com.google.common.base.Preconditions;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
 import com.ishland.raknetify.common.connection.MultiChannellingEncryption;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import com.ishland.raknetify.velocity.RaknetifyVelocityPlugin;
@@ -64,14 +65,15 @@ public class RakNetVelocityChannelEventListener extends ChannelDuplexHandler {
             // ServerConnectedEvent completes before Velocity schedules its
             // JoinGame/Respawn switch sequence on this event loop. That path
             // already inserted one fence for the complete synthetic sequence.
-            if (!RakNetVelocityConnectionUtil.isPreGatedServerSwitch(ctx.channel())) {
+            if (!PreGatedTransitionScope.isActive(ctx.channel())) {
                 ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
             }
             super.write(ctx, msg, promise);
             return;
         } else if (msg instanceof AvailableCommandsPacket) {
-            RakNetVelocityConnectionUtil.completePreGatedServerSwitch(ctx.channel());
-            ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
+            if (PreGatedTransitionScope.complete(ctx.channel()) == 0) {
+                ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
+            }
             super.write(ctx, msg, promise);
             return;
         }

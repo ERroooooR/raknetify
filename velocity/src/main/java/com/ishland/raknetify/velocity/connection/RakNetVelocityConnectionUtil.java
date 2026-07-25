@@ -23,9 +23,9 @@ package com.ishland.raknetify.velocity.connection;
 import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.ByteBufCopyDecoder;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
-import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.velocity.RaknetifyVelocityPlugin;
@@ -43,16 +43,12 @@ import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.handler.codec.haproxy.HAProxyMessageDecoder;
-import io.netty.util.AttributeKey;
 import network.ycc.raknet.RakNet;
 
 import java.util.Arrays;
 import java.util.Collections;
 
 public class RakNetVelocityConnectionUtil {
-
-    private static final AttributeKey<Boolean> PRE_GATED_SERVER_SWITCH =
-            AttributeKey.valueOf("raknetify:velocity-pre-gated-server-switch");
 
     private RakNetVelocityConnectionUtil() {
     }
@@ -123,8 +119,7 @@ public class RakNetVelocityConnectionUtil {
         final ConnectedPlayer player = (ConnectedPlayer) evt.getPlayer();
         final Channel channel = player.getConnection().getChannel();
         if (channel != null && channel.config() instanceof RakNet.Config) {
-            beginPreGatedServerSwitch(channel);
-            channel.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+            PreGatedTransitionScope.requestFence(channel);
         }
     }
 
@@ -144,18 +139,6 @@ public class RakNetVelocityConnectionUtil {
         if (channel.config() instanceof RakNet.Config) {
             serverConnection.getChannel().pipeline().addBefore(Connections.HANDLER, RakNetVelocityServerChannelEventListener.NAME, new RakNetVelocityServerChannelEventListener(channel));
         }
-    }
-
-    static void beginPreGatedServerSwitch(Channel channel) {
-        channel.attr(PRE_GATED_SERVER_SWITCH).set(true);
-    }
-
-    static boolean isPreGatedServerSwitch(Channel channel) {
-        return Boolean.TRUE.equals(channel.attr(PRE_GATED_SERVER_SWITCH).get());
-    }
-
-    static void completePreGatedServerSwitch(Channel channel) {
-        channel.attr(PRE_GATED_SERVER_SWITCH).set(false);
     }
 
 }

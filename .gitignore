@@ -35,3 +35,7 @@ run*/
 # proxy tests
 
 /velocity/logs/
+
+# Python verification tools
+
+__pycache__/
