@@ -98,10 +98,17 @@ public class RakNetBungeeClientChannelEventListener extends ChannelDuplexHandler
                 return;
             }
         } else if (msg instanceof Respawn || msg instanceof Login || msg instanceof StartConfiguration || msg instanceof FinishConfiguration) {
-            ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT); // sync
+            // ServerConnectedEvent runs synchronously before Bungee emits its
+            // switch reset sequence. That path already inserted one fence for
+            // the complete sequence, so do not turn each synthetic
+            // Login/Respawn/configuration packet into another gameplay epoch.
+            if (!RakNetBungeeConnectionUtil.isPreGatedServerSwitch(ctx.channel())) {
+                ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+            }
             super.write(ctx, msg, promise);
             return;
         } else if (msg instanceof Commands) {
+            RakNetBungeeConnectionUtil.completePreGatedServerSwitch(ctx.channel());
             ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
             super.write(ctx, msg, promise);
             return;

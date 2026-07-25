@@ -68,6 +68,13 @@ epoch. Capability advertisements become immutable after the first valid control 
 future-epoch gameplay frame may target only `current + 1`; malformed/truncated headers, unknown
 frame types and larger epoch skips are rejected before they can enter a retained queue.
 
+Bungee's backend switch is treated as one platform transition scope. `ServerConnectedEvent` fires
+synchronously before Bungee emits its synthetic state-reset sequence, so Raknetify inserts one
+fence there and marks the sequence as pre-gated. Synthetic Login, Respawn and configuration packets
+do not create additional epochs while that scope is active; the Commands packet closes the scope
+at the same boundary that restarts multichannel delivery. Ordinary Respawn packets outside a
+server-switch scope still create their own fence.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -135,6 +142,8 @@ Automated verification now:
 - Injects conflicting capability advertisements, incomplete/unknown epoch headers, skipped future
   epochs, incomplete channel masks, interleaved fence IDs and completed-ID reuse, requiring every
   malformed transition to fail before state is committed or memory is retained.
+- Verifies the Bungee synthetic Login/Respawn/configuration switch sequence consumes one pre-gate,
+  closes at Commands and leaves later ordinary Respawns free to request their own fence.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet
