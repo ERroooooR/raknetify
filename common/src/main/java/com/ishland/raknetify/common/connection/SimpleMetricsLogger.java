@@ -123,6 +123,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile int causalOutboundEpoch;
     private volatile int causalInboundEpoch;
     private volatile long causalStaleFramesDropped;
+    private volatile long causalOutboundFramesQueued;
+    private volatile int causalOutboundFramesPending;
+    private volatile long causalOutboundBytesPending;
+    private volatile long causalOutboundQueueOverflows;
     private volatile long causalFutureFramesQueued;
     private volatile int causalFutureFramesPending;
     private volatile long causalFutureBytesPending;
@@ -467,6 +471,20 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     public void causalStaleFrameDropped() {
         causalStaleFramesDropped++;
+    }
+
+    public void causalOutboundFrameQueued(int framesPending, long bytesPending) {
+        causalOutboundFramesQueued++;
+        causalOutboundQueueState(framesPending, bytesPending);
+    }
+
+    public void causalOutboundQueueState(int framesPending, long bytesPending) {
+        causalOutboundFramesPending = Math.max(0, framesPending);
+        causalOutboundBytesPending = Math.max(0L, bytesPending);
+    }
+
+    public void causalOutboundQueueOverflow() {
+        causalOutboundQueueOverflows++;
     }
 
     public void causalFutureFrameQueued(int framesPending, long bytesPending) {
@@ -933,6 +951,10 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public int getCausalOutboundEpoch() { return causalOutboundEpoch; }
     public int getCausalInboundEpoch() { return causalInboundEpoch; }
     public long getCausalStaleFramesDropped() { return causalStaleFramesDropped; }
+    public long getCausalOutboundFramesQueued() { return causalOutboundFramesQueued; }
+    public int getCausalOutboundFramesPending() { return causalOutboundFramesPending; }
+    public long getCausalOutboundBytesPending() { return causalOutboundBytesPending; }
+    public long getCausalOutboundQueueOverflows() { return causalOutboundQueueOverflows; }
     public long getCausalFutureFramesQueued() { return causalFutureFramesQueued; }
     public int getCausalFutureFramesPending() { return causalFutureFramesPending; }
     public long getCausalFutureBytesPending() { return causalFutureBytesPending; }
@@ -1016,7 +1038,12 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"causal_fences_started\":%d,\"causal_fences_completed\":%d," +
                         "\"causal_fences_failed\":%d,\"causal_inbound_fences_completed\":%d," +
                         "\"causal_outbound_epoch\":%d,\"causal_inbound_epoch\":%d," +
-                        "\"causal_stale_frames_dropped\":%d,\"causal_future_frames_queued\":%d," +
+                        "\"causal_stale_frames_dropped\":%d," +
+                        "\"causal_outbound_frames_queued\":%d," +
+                        "\"causal_outbound_frames_pending\":%d," +
+                        "\"causal_outbound_bytes_pending\":%d," +
+                        "\"causal_outbound_queue_overflows\":%d," +
+                        "\"causal_future_frames_queued\":%d," +
                         "\"causal_future_frames_pending\":%d,\"causal_future_bytes_pending\":%d," +
                         "\"causal_atomic_bundles_outbound\":%d," +
                         "\"causal_atomic_bundle_packets_outbound\":%d," +
@@ -1133,7 +1160,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(getDependencyDomainPendingBytes()),
                 causalFencesStarted, causalFencesCompleted, causalFencesFailed,
                 causalInboundFencesCompleted, causalOutboundEpoch, causalInboundEpoch,
-                causalStaleFramesDropped, causalFutureFramesQueued,
+                causalStaleFramesDropped, causalOutboundFramesQueued,
+                causalOutboundFramesPending, causalOutboundBytesPending,
+                causalOutboundQueueOverflows, causalFutureFramesQueued,
                 causalFutureFramesPending, causalFutureBytesPending,
                 causalAtomicBundlesOutbound, causalAtomicBundlePacketsOutbound,
                 causalAtomicBundlesInbound, causalAtomicBundlePacketsInbound,

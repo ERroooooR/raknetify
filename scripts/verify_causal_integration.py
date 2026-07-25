@@ -37,6 +37,9 @@ REQUIRED_CAUSAL_FIELDS = (
     "causal_outbound_epoch",
     "causal_inbound_epoch",
     "causal_stale_frames_dropped",
+    "causal_outbound_frames_pending",
+    "causal_outbound_bytes_pending",
+    "causal_outbound_queue_overflows",
     "causal_future_frames_pending",
     "causal_future_bytes_pending",
 )
@@ -145,6 +148,15 @@ def verify_metrics(
         outbound_epoch = integer(sample, "causal_outbound_epoch", connection, errors)
         inbound_epoch = integer(sample, "causal_inbound_epoch", connection, errors)
         stale = integer(sample, "causal_stale_frames_dropped", connection, errors)
+        outbound_frames = integer(
+            sample, "causal_outbound_frames_pending", connection, errors
+        )
+        outbound_bytes = integer(
+            sample, "causal_outbound_bytes_pending", connection, errors
+        )
+        outbound_overflows = integer(
+            sample, "causal_outbound_queue_overflows", connection, errors
+        )
         future_frames = integer(
             sample, "causal_future_frames_pending", connection, errors
         )
@@ -185,6 +197,16 @@ def verify_metrics(
         if stale:
             errors.append(
                 f"connection {connection}: {stale} stale gameplay frames reached the codec"
+            )
+        if outbound_overflows:
+            errors.append(
+                f"connection {connection}: causal outbound queue overflowed "
+                f"{outbound_overflows} time(s)"
+            )
+        if outbound_frames or outbound_bytes:
+            errors.append(
+                f"connection {connection}: causal outbound queue did not drain "
+                f"(frames={outbound_frames}, bytes={outbound_bytes})"
             )
         if future_frames or future_bytes:
             errors.append(

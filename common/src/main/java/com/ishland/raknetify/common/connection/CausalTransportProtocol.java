@@ -56,6 +56,7 @@ public final class CausalTransportProtocol {
 
     public static final int MAX_ATOMIC_BUNDLE_PACKETS = 4096;
     public static final int MAX_ATOMIC_BUNDLE_BYTES = 64 * 1024 * 1024;
+    public static final int MAX_PENDING_CAUSAL_WRITES = 16 * 1024;
 
     private static final int CONTROL_MAGIC = 0x524b4331; // "RKC1"
     private static final int CONTROL_CAPABILITIES = 1;

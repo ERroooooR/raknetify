@@ -24,6 +24,10 @@ def sample(**overrides):
         "causal_outbound_epoch": 100,
         "causal_inbound_epoch": 0,
         "causal_stale_frames_dropped": 0,
+        "causal_outbound_frames_queued": 100,
+        "causal_outbound_frames_pending": 0,
+        "causal_outbound_bytes_pending": 0,
+        "causal_outbound_queue_overflows": 0,
         "causal_future_frames_pending": 0,
         "causal_future_bytes_pending": 0,
         "causal_atomic_bundles_outbound": 4,
@@ -52,6 +56,9 @@ class VerifyCausalIntegrationTest(unittest.TestCase):
                     causal_fences_completed=99,
                     causal_outbound_epoch=99,
                     causal_stale_frames_dropped=1,
+                    causal_outbound_frames_pending=2,
+                    causal_outbound_bytes_pending=512,
+                    causal_outbound_queue_overflows=1,
                 )
             },
             minimum_transitions=100,
@@ -63,6 +70,12 @@ class VerifyCausalIntegrationTest(unittest.TestCase):
         )
         self.assertTrue(
             any("stale gameplay frames" in error for error in result.errors)
+        )
+        self.assertTrue(
+            any("outbound queue overflowed" in error for error in result.errors)
+        )
+        self.assertTrue(
+            any("outbound queue did not drain" in error for error in result.errors)
         )
 
     def test_loader_uses_final_sample_and_log_scanner_finds_protocol_failure(self):

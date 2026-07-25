@@ -73,6 +73,9 @@ class SimpleMetricsLoggerTest {
         logger.causalFenceFailed();
         logger.causalInboundFenceCompleted(1);
         logger.causalStaleFrameDropped();
+        logger.causalOutboundFrameQueued(2, 1024);
+        logger.causalOutboundQueueState(0, 0);
+        logger.causalOutboundQueueOverflow();
         logger.causalFutureFrameQueued(1, 4096);
         logger.causalFutureQueueState(0, 0);
         logger.causalAtomicBundleOutbound(7);
@@ -146,6 +149,10 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"causal_outbound_epoch\":1"));
         assertTrue(line.contains("\"causal_inbound_epoch\":1"));
         assertTrue(line.contains("\"causal_stale_frames_dropped\":1"));
+        assertTrue(line.contains("\"causal_outbound_frames_queued\":1"));
+        assertTrue(line.contains("\"causal_outbound_frames_pending\":0"));
+        assertTrue(line.contains("\"causal_outbound_bytes_pending\":0"));
+        assertTrue(line.contains("\"causal_outbound_queue_overflows\":1"));
         assertTrue(line.contains("\"causal_future_frames_queued\":1"));
         assertTrue(line.contains("\"causal_future_frames_pending\":0"));
         assertTrue(line.contains("\"causal_atomic_bundles_outbound\":1"));

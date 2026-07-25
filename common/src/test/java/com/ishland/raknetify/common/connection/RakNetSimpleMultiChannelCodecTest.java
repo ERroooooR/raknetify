@@ -29,6 +29,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.util.ReferenceCountUtil;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RakNetSimpleMultiChannelCodecTest {
@@ -262,6 +264,41 @@ class RakNetSimpleMultiChannelCodecTest {
         }
         assertFalse(channel.writeInbound(staleFrame));
         assertNull(channel.readInbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void overflowingCausalWaitQueueFailsAndReleasesEveryWrite() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd, 4, 4);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ChannelPromise fencePromise = channel.newPromise();
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                fencePromise
+        );
+        final ByteBuf first = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf second = Unpooled.buffer(2).writeZero(2);
+        final ByteBuf overflow = Unpooled.buffer(1).writeZero(1);
+        final ChannelPromise firstPromise = channel.newPromise();
+        final ChannelPromise secondPromise = channel.newPromise();
+        final ChannelPromise overflowPromise = channel.newPromise();
+        channel.pipeline().write(first, firstPromise);
+        channel.pipeline().write(second, secondPromise);
+        channel.pipeline().write(overflow, overflowPromise);
+
+        assertThrows(CorruptedFrameException.class, channel::checkException);
+        assertFalse(firstPromise.isSuccess());
+        assertFalse(secondPromise.isSuccess());
+        assertFalse(overflowPromise.isSuccess());
+        assertEquals(0, first.refCnt());
+        assertEquals(0, second.refCnt());
+        assertEquals(0, overflow.refCnt());
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
         assertFalse(channel.finishAndReleaseAll());
     }
 
