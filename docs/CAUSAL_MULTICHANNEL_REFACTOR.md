@@ -89,8 +89,25 @@ sent and pending frame/byte arrays in `DependencyDomain` enum order.
 
 ## Verification
 
-- Inject loss, delay and reordering independently per RakNet channel.
-- Repeat dimension transitions and server switches while large fragments are in flight.
-- Verify `spawn -> pairing data -> metadata -> passengers` and custom entity payload order.
-- Exercise Fabric, Sinytra Connector/NeoForge, Velocity and Bungee paths.
-- Run Create and Touhou Little Maid integration loops for at least 100 transitions under 1-5% loss.
+Automated verification now:
+
+- Connects the real `RakNetSimpleMultiChannelCodec` and `SynchronizationLayer` at both ends of a
+  deterministic link that independently delays/reorders channels and adds retransmission delay to
+  1-5% of first deliveries.
+- Runs 100 gameplay-epoch transitions while alternating atomic and non-atomic entity chains and
+  placing a 256 KiB guarded-bulk frame before every fence.
+- Verifies `spawn -> pairing data -> metadata -> passengers -> custom entity payload` exactly once
+  and in order in every epoch.
+- Verifies all pre-fence application frames enter the transport before the eight channel markers,
+  and that the post-ACK restart barrier enters channel 7 before new-epoch gameplay is released.
+- Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
+
+The deterministic link models the ordered result of RakNet retransmission. The netty-raknet
+`manyBufferBadBoth` and `adaptiveV12SurvivesModerateRandomLoss` end-to-end tests separately exercise
+real datagram loss, duplication, reordering and fragmentation; both pass against this revision.
+
+Still required in an external Minecraft test environment:
+
+- Exercise Fabric and Sinytra Connector/NeoForge clients through Velocity and Bungee.
+- Run Create and Touhou Little Maid integration loops for at least 100 portal/server transitions
+  under 1-5% datagram loss, recording crashes, entity invariants and Raknetify JSONL metrics.

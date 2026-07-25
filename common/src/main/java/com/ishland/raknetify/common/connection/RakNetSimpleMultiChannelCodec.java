@@ -165,6 +165,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         if (msg == SynchronizationLayer.SYNC_REQUEST_OBJECT) {
             if (this.isMultichannelEnabled) {
                 if (Constants.DEBUG) System.out.println("Raknetify: [MultiChannellingDataCodec] Stopped multichannel");
+                // The dependency-domain scheduler may still contain writes
+                // from this event-loop turn. They causally precede the fence
+                // request and must enter FrameOrderOut before its markers.
+                drainScheduledWrites(ctx);
                 this.isMultichannelEnabled = false;
                 if (isGameplayEpochNegotiated()) {
                     waitingForEpochFence = true;
@@ -698,8 +702,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             outboundEpoch = advanced.epoch();
             waitingForEpochFence = false;
             queuePendingWrites = false;
-            flushPendingWrites(ctx);
+            // A restart signal is a barrier for the new epoch. Process it
+            // before releasing application packets so those packets cannot be
+            // encoded on the pre-start/default order channel.
             flushPendingControlWrites(ctx);
+            if (!queuePendingWrites) {
+                flushPendingWrites(ctx);
+            }
         }
         super.userEventTriggered(ctx, evt);
     }
