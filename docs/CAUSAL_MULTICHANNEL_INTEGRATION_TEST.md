@@ -21,6 +21,55 @@ drained.
 Each process writes `logs/raknetify-metrics.jsonl`. Move or delete an older metrics file before
 starting a run so connection counters from different builds cannot be combined.
 
+### Reproducible NeoForge/Connector server
+
+The affected client pack can be reduced into an isolated server without modifying either the pack
+or an existing server. The preparer reads NeoForge, Forge and Fabric metadata (including embedded
+jar-in-jar providers), recursively includes required server-side dependencies and rejects
+conflicting providers:
+
+```powershell
+$raknetifyFabric = Get-ChildItem fabric\build\libs -Filter '*-all.jar' |
+  Sort-Object LastWriteTime | Select-Object -Last 1
+python scripts/prepare_causal_testbed.py `
+  --server-template D:\path\to\neoforge-server `
+  --client-mods D:\path\to\affected-client\mods `
+  --raknetify-jar $raknetifyFabric.FullName `
+  --output build\causal-testbed\server
+```
+
+By default it selects Connector, Forgified Fabric API, Connector Extras, BandwidthOptimizer,
+Create, the bogie add-on, Touhou Little Maid and MaidUseHandCrank. It binds the copied server to
+`127.0.0.1:25576`, enables causal JSONL metrics, pins protocol v12 and deliberately removes old
+adaptive-tuning properties. The output contains `.causal-testbed.json` with exact source paths,
+hashes, resolved mod IDs and JVM arguments. An existing output is replaced only with `--replace`
+and only if that sentinel is present.
+
+The isolated world also contains a datapack-driven client entry point. Any connected player can
+run `/trigger rk_causal set 1` to perform exactly 100 alternating Overworld/Nether transitions at
+one-second intervals. `/trigger rk_causal set 2` stops it and `/trigger rk_causal set 3` reports
+progress. The datapack builds small forced-loaded safety platforms at the destination coordinates.
+After the completion message, stay connected for at least ten seconds before collecting metrics.
+
+Velocity and Bungee can be prepared beside it using the exact proxy and plugin jars under test:
+
+```powershell
+$raknetifyVelocity = Get-ChildItem velocity\build\libs -Filter '*-all.jar' |
+  Sort-Object LastWriteTime | Select-Object -Last 1
+$raknetifyBungee = Get-ChildItem bungee\build\libs -Filter '*-all.jar' |
+  Sort-Object LastWriteTime | Select-Object -Last 1
+python scripts/prepare_causal_proxies.py `
+  --velocity-jar D:\path\to\velocity.jar `
+  --velocity-plugin $raknetifyVelocity.FullName `
+  --bungee-jar D:\path\to\bungeecord.jar `
+  --bungee-plugin $raknetifyBungee.FullName `
+  --output build\causal-testbed\proxies
+```
+
+The generated proxies bind only to `127.0.0.1` on ports `25577` and `25578`, route to the direct
+server on `25576`, and use the same protocol/metrics baseline. Their sentinel records SHA-256
+hashes for both proxy distributions and both Raknetify plugins.
+
 ## Network fault profile
 
 Apply faults to the UDP RakNet path, not the backend TCP connection. Run at least one loop for each
