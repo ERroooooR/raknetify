@@ -100,6 +100,11 @@ Automated verification now:
   and in order in every epoch.
 - Verifies all pre-fence application frames enter the transport before the eight channel markers,
   and that the post-ACK restart barrier enters channel 7 before new-epoch gameplay is released.
+- Issues all 100 `fence -> restart -> gameplay` transitions back-to-back before delivering the
+  first ACK, then verifies that every fence remains distinct and every epoch/entity chain arrives.
+  Transition wait queues preserve the original order of control and gameplay writes. Completed
+  ACK state is detached before callbacks can start the next fence, and fence markers/ACKs are
+  explicitly flushed so a re-entrant transition cannot stall behind an already completed flush.
 - Runs the Common test suite and clean Fabric, Velocity and Bungee builds with license checks.
 
 The deterministic link models the ordered result of RakNet retransmission. The netty-raknet

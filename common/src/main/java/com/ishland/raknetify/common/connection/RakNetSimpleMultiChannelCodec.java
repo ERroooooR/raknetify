@@ -118,17 +118,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        if (this.queuePendingWrites && msg instanceof ByteBuf buf) {
-            pendingWrites.add(new PendingWrite(buf, promise));
+        if (this.queuePendingWrites) {
+            pendingWrites.add(new PendingWrite(msg, promise));
             return;
         }
 
-        if ((atomicBundleAssembler.isOpen() || waitingForEpochFence)
+        if (atomicBundleAssembler.isOpen()
                 && (msg == SIGNAL_START_MULTICHANNEL || msg == SynchronizationLayer.SYNC_REQUEST_OBJECT)) {
-            if (msg == SynchronizationLayer.SYNC_REQUEST_OBJECT && waitingForEpochFence) {
-                super.write(ctx, msg, promise);
-                return;
-            }
             pendingControlWrites.add(new PendingControlWrite(msg, promise));
             return;
         }
@@ -332,14 +328,20 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private void flushPendingWrites(ChannelHandlerContext ctx) {
         this.queuePendingWrites = false;
         PendingWrite pendingWrite;
-        while ((pendingWrite = this.pendingWrites.poll()) != null) {
+        boolean replayedWrite = false;
+        while (!this.queuePendingWrites
+                && (pendingWrite = this.pendingWrites.poll()) != null) {
             try {
-                writeGamePacket(ctx, pendingWrite.packet, pendingWrite.promise);
+                write(ctx, pendingWrite.message, pendingWrite.promise);
+                replayedWrite = true;
             } catch (Throwable t) {
                 pendingWrite.promise.tryFailure(t);
-                ReferenceCountUtil.safeRelease(pendingWrite.packet);
+                ReferenceCountUtil.safeRelease(pendingWrite.message);
                 ctx.fireExceptionCaught(t);
             }
+        }
+        if (replayedWrite) {
+            ctx.flush();
         }
     }
 
@@ -347,7 +349,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         PendingWrite pendingWrite;
         while ((pendingWrite = pendingWrites.poll()) != null) {
             pendingWrite.promise.tryFailure(cause);
-            ReferenceCountUtil.safeRelease(pendingWrite.packet);
+            ReferenceCountUtil.safeRelease(pendingWrite.message);
         }
     }
 
@@ -861,7 +863,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
     }
 
-    private record PendingWrite(ByteBuf packet, ChannelPromise promise) {
+    private record PendingWrite(Object message, ChannelPromise promise) {
     }
 
     private record PendingControlWrite(Object message, ChannelPromise promise) {

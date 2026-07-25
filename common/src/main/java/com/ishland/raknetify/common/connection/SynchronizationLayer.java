@@ -93,7 +93,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                 return;
             }
             if (waitingForAck) {
-                activeFencePromises.add(promise);
+                queuedWrites.add(new PendingWrite(msg, promise));
                 return;
             }
             beginFence(ctx, promise);
@@ -144,6 +144,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             }
             writeFenceRequest(ctx, activeFenceId, activeFenceEpoch, channelMask, channel);
         }
+        ctx.flush();
     }
 
     private void writeFenceRequest(
@@ -264,7 +265,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         try {
             frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, payload);
             frameData.setOrderChannel(7);
-            ctx.write(frameData).addListener(future -> {
+            ctx.writeAndFlush(frameData).addListener(future -> {
                 if (!future.isSuccess()) {
                     ctx.fireExceptionCaught(future.cause());
                 }
@@ -292,18 +293,21 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             throw new CorruptedFrameException("Unexpected causal fence ACK");
         }
 
+        final int completedEpoch = activeFenceEpoch;
+        final List<ChannelPromise> completedPromises =
+                new ArrayList<>(activeFencePromises);
+        activeFencePromises.clear();
         waitingForAck = false;
-        outboundEpoch = activeFenceEpoch;
+        outboundEpoch = completedEpoch;
+        activeFenceId = 0L;
+        activeFenceEpoch = 0;
         final SimpleMetricsLogger metrics = metrics(ctx);
         if (metrics != null) {
             metrics.causalFenceCompleted(outboundEpoch);
         }
         flushQueuedWrites(ctx);
-        ctx.fireUserEventTriggered(new OutboundEpochAdvanced(outboundEpoch));
-        activeFencePromises.forEach(ChannelPromise::trySuccess);
-        activeFencePromises.clear();
-        activeFenceId = 0L;
-        activeFenceEpoch = 0;
+        ctx.fireUserEventTriggered(new OutboundEpochAdvanced(completedEpoch));
+        completedPromises.forEach(ChannelPromise::trySuccess);
     }
 
     private static void requireReliableOrdered(FrameData packet, String description) {
@@ -317,9 +321,11 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
 
     private void flushQueuedWrites(ChannelHandlerContext ctx) {
         PendingWrite pendingWrite;
-        while ((pendingWrite = queuedWrites.poll()) != null) {
+        boolean replayedWrite = false;
+        while (!waitingForAck && (pendingWrite = queuedWrites.poll()) != null) {
             try {
-                ctx.write(pendingWrite.message, pendingWrite.promise);
+                write(ctx, pendingWrite.message, pendingWrite.promise);
+                replayedWrite = true;
             } catch (Throwable throwable) {
                 pendingWrite.promise.tryFailure(throwable);
                 ReferenceCountUtil.safeRelease(pendingWrite.message);
@@ -327,6 +333,9 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                 ctx.fireExceptionCaught(throwable);
                 return;
             }
+        }
+        if (replayedWrite) {
+            ctx.flush();
         }
     }
 

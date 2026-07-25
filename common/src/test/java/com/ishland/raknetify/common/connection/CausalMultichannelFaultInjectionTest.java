@@ -148,6 +148,90 @@ class CausalMultichannelFaultInjectionTest {
         assertFalse(receiver.channel.finishAndReleaseAll());
     }
 
+    @Test
+    void oneHundredBackToBackTransitionsRetainEveryEpochBoundary() {
+        final Endpoint sender = new Endpoint();
+        final Endpoint receiver = new Endpoint();
+        final FaultyOrderedLink link = new FaultyOrderedLink(0x51a1_1eedL);
+        negotiate(sender, receiver);
+
+        final List<ChannelPromise> fencePromises = new ArrayList<>();
+        final List<ChannelPromise> restartPromises = new ArrayList<>();
+        final List<ChannelPromise> gamePromises = new ArrayList<>();
+        for (int nextEpoch = 1; nextEpoch <= TRANSITIONS; nextEpoch++) {
+            final ChannelPromise fencePromise = sender.channel.newPromise();
+            sender.channel.pipeline().write(
+                    SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                    fencePromise
+            );
+            fencePromises.add(fencePromise);
+
+            final ChannelPromise restartPromise = sender.channel.newPromise();
+            sender.channel.pipeline().write(
+                    RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL,
+                    restartPromise
+            );
+            restartPromises.add(restartPromise);
+            gamePromises.addAll(writeEntityChain(
+                    sender.channel,
+                    nextEpoch,
+                    (nextEpoch & 1) == 0
+            ));
+            writePacket(sender.channel, INDEPENDENT_CONTROL, nextEpoch);
+            writePacket(sender.channel, EPHEMERAL_EFFECT, nextEpoch);
+        }
+        sender.channel.pipeline().flush();
+
+        List<FrameData> outbound = drainOutbound(sender.channel);
+        assertEquals(CausalFenceProtocol.ORDER_CHANNEL_COUNT, outbound.size());
+        for (int completedEpoch = 1;
+             completedEpoch <= TRANSITIONS;
+             completedEpoch++) {
+            link.deliver(outbound, receiver.channel, 1 + completedEpoch % 5);
+            final List<FrameData> acknowledgements =
+                    drainOutbound(receiver.channel);
+            assertEquals(1, acknowledgements.size());
+            link.deliver(
+                    acknowledgements,
+                    sender.channel,
+                    1 + completedEpoch % 5
+            );
+
+            outbound = drainOutbound(sender.channel);
+            assertRestartBarrierPrecedesAnyNewEpoch(outbound);
+            if (completedEpoch < TRANSITIONS) {
+                assertApplicationFramesPrecedeFenceMarkers(
+                        outbound,
+                        "after completed epoch " + completedEpoch
+                );
+            }
+        }
+
+        link.deliver(outbound, receiver.channel, 5);
+        assertTrue(drainOutbound(receiver.channel).isEmpty());
+        assertPromisesSucceeded(fencePromises);
+        assertPromisesSucceeded(restartPromises);
+        assertPromisesSucceeded(gamePromises);
+        assertEquals(TRANSITIONS, receiver.capture.currentEpoch);
+        for (int epoch = 1; epoch <= TRANSITIONS; epoch++) {
+            assertEquals(
+                    Arrays.asList(
+                            ENTITY_SPAWN,
+                            ENTITY_PAIRING,
+                            ENTITY_METADATA,
+                            ENTITY_PASSENGERS,
+                            CUSTOM_ENTITY_PAYLOAD
+                    ),
+                    receiver.capture.entityPackets(epoch),
+                    "entity causal chain changed in queued epoch " + epoch
+            );
+        }
+        assertEquals(TRANSITIONS, receiver.capture.entityEpochs.size());
+        assertTrue(link.simulatedLosses > 0);
+        assertFalse(sender.channel.finishAndReleaseAll());
+        assertFalse(receiver.channel.finishAndReleaseAll());
+    }
+
     private static void negotiate(Endpoint first, Endpoint second) {
         assertTrue(first.channel.writeOutbound(
                 RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL
@@ -229,6 +313,13 @@ class CausalMultichannelFaultInjectionTest {
     private static void assertApplicationFramesPrecedeFenceMarkers(
             List<FrameData> frames
     ) {
+        assertApplicationFramesPrecedeFenceMarkers(frames, "");
+    }
+
+    private static void assertApplicationFramesPrecedeFenceMarkers(
+            List<FrameData> frames,
+            String context
+    ) {
         boolean sawFence = false;
         int fenceMarkers = 0;
         final List<Integer> applicationChannels = new ArrayList<>();
@@ -244,13 +335,31 @@ class CausalMultichannelFaultInjectionTest {
                 applicationChannels.add(frame.getOrderChannel());
             }
         }
-        assertEquals(CausalFenceProtocol.ORDER_CHANNEL_COUNT, fenceMarkers);
+        assertEquals(
+                CausalFenceProtocol.ORDER_CHANNEL_COUNT,
+                fenceMarkers,
+                context + " packetIds=" + frames.stream()
+                        .map(FrameData::getPacketId)
+                        .toList()
+        );
         assertTrue(applicationChannels.contains(7));
         assertTrue(applicationChannels.contains(1));
         assertTrue(applicationChannels.contains(4));
     }
 
     private static void assertRestartBarrierPrecedesNewEpoch(
+            List<FrameData> frames
+    ) {
+        assertRestartBarrierPrecedesAnyNewEpoch(frames);
+        for (int i = 1; i < frames.size(); i++) {
+            final FrameData frame = frames.get(i);
+            if (frame.getPacketId() == Constants.RAKNET_GAME_PACKET_ID) {
+                assertEquals(7, frame.getOrderChannel());
+            }
+        }
+    }
+
+    private static void assertRestartBarrierPrecedesAnyNewEpoch(
             List<FrameData> frames
     ) {
         assertFalse(frames.isEmpty());
@@ -260,7 +369,6 @@ class CausalMultichannelFaultInjectionTest {
             final FrameData frame = frames.get(i);
             if (frame.getPacketId() == Constants.RAKNET_GAME_PACKET_ID) {
                 sawGameFrame = true;
-                assertEquals(7, frame.getOrderChannel());
             }
         }
         assertTrue(sawGameFrame);
