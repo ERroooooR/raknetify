@@ -136,6 +136,10 @@ public class RaknetifyFabricMixinPlugin implements IMixinConfigPlugin {
             return !AFTER_1_20_1;
         if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.access.INetworkState1_20_4"))
             return !AFTER_1_20_4;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.access.INetworkStateInternalPacketHandler"))
+            return !AFTER_1_20_4;
+        if (mixinClassName.equals("com.ishland.raknetify.fabric.mixin.access.IDebugHudEntries"))
+            return AFTER_1_21_8;
         return true;
     }
 
