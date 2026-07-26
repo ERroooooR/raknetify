@@ -59,10 +59,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     private long activeFenceId;
     private int activeFenceEpoch;
     private int outboundEpoch;
-    private int inboundEpoch;
-    private long lastCompletedInboundFenceId;
-    private long activeInboundFenceId;
-    private InboundFence activeInboundFence;
+    private final InboundCausalFenceTracker inboundFenceTracker;
 
     public SynchronizationLayer(int... channelsToIgnore) {
         this(
@@ -96,6 +93,8 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                     "Causal fence has no active channels"
             );
         }
+        this.inboundFenceTracker =
+                new InboundCausalFenceTracker(activeChannelMask);
     }
 
     @Override
@@ -226,64 +225,19 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     ) {
         requireReliableOrdered(packet, "request");
         final int channel = packet.getOrderChannel();
-        if (request.channelMask() != activeChannelMask) {
-            throw new CorruptedFrameException(
-                    "Fence request channel mask does not match the active channels"
-            );
-        }
-        if (channel < 0
-                || channel >= CausalFenceProtocol.ORDER_CHANNEL_COUNT
-                || (activeChannelMask & 1 << channel) == 0) {
-            throw new CorruptedFrameException(
-                    "Fence request arrived on an unexpected channel"
-            );
-        }
-
-        if (request.fenceId() == lastCompletedInboundFenceId) {
-            if (request.epoch() != inboundEpoch) {
-                throw new CorruptedFrameException(
-                        "Completed causal fence id was reused for another epoch"
-                );
-            }
-            writeFenceAck(ctx, request.fenceId(), request.epoch());
-            return;
-        }
-        if (request.fenceId() < lastCompletedInboundFenceId) {
-            return;
-        }
-
-        if (activeInboundFence == null) {
-            if (inboundEpoch == Integer.MAX_VALUE
-                    || request.epoch() != inboundEpoch + 1) {
-                throw new CorruptedFrameException("Unexpected inbound gameplay epoch "
-                        + request.epoch() + ", expected " + (inboundEpoch + 1));
-            }
-            activeInboundFenceId = request.fenceId();
-            activeInboundFence = new InboundFence(
-                    request.epoch(),
-                    request.channelMask()
-            );
-        } else if (request.fenceId() != activeInboundFenceId) {
-            throw new CorruptedFrameException(
-                    "Interleaved causal fence ids are not permitted"
-            );
-        } else if (activeInboundFence.epoch != request.epoch()
-                || activeInboundFence.channelMask != request.channelMask()) {
-            throw new CorruptedFrameException("Inconsistent causal fence request");
-        }
-
-        activeInboundFence.seenMask |= 1 << channel;
-        if (activeInboundFence.seenMask == activeInboundFence.channelMask) {
-            inboundEpoch = activeInboundFence.epoch;
-            lastCompletedInboundFenceId = request.fenceId();
-            activeInboundFenceId = 0L;
-            activeInboundFence = null;
+        final InboundCausalFenceTracker.Result result =
+                inboundFenceTracker.accept(request, channel);
+        if (result.action()
+                == InboundCausalFenceTracker.Action.COMMIT_AND_ACKNOWLEDGE) {
             final SimpleMetricsLogger metrics = metrics(ctx);
             if (metrics != null) {
-                metrics.causalInboundFenceCompleted(inboundEpoch);
+                metrics.causalInboundFenceCompleted(result.epoch());
             }
-            ctx.fireUserEventTriggered(new InboundEpochAdvanced(inboundEpoch));
-            writeFenceAck(ctx, request.fenceId(), inboundEpoch);
+            ctx.fireUserEventTriggered(new InboundEpochAdvanced(result.epoch()));
+            writeFenceAck(ctx, request.fenceId(), result.epoch());
+        } else if (result.action()
+                == InboundCausalFenceTracker.Action.ACKNOWLEDGE) {
+            writeFenceAck(ctx, request.fenceId(), result.epoch());
         }
     }
 
@@ -462,8 +416,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         activeFencePromises.forEach(promise -> promise.tryFailure(cause));
         activeFencePromises.clear();
         failQueuedWrites(ctx, cause);
-        activeInboundFenceId = 0L;
-        activeInboundFence = null;
+        inboundFenceTracker.clearActive();
         super.handlerRemoved(ctx);
     }
 
@@ -479,17 +432,6 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     }
 
     public record OutboundEpochAdvanced(int epoch) {
-    }
-
-    private static final class InboundFence {
-        private final int epoch;
-        private final int channelMask;
-        private int seenMask;
-
-        private InboundFence(int epoch, int channelMask) {
-            this.epoch = epoch;
-            this.channelMask = channelMask;
-        }
     }
 
 }

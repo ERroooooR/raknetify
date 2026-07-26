@@ -110,6 +110,12 @@ larger than `current + 1`, and applies independent count and byte bounds. Remova
 releases all retained buffers; the codec only decides whether a frame is eligible for epoch
 handling and delegates its lifetime to the gate.
 
+Inbound fence-marker aggregation is also a pure Common state machine, separate from Netty ACK
+writes, metrics and event delivery. It commits an epoch only when every locally active order
+channel has arrived, treats retransmitted markers for the most recently completed fence as an
+idempotent ACK request, ignores older fence IDs, and rejects channel-mask mismatches, skipped
+epochs, interleaved IDs or completed-ID reuse before changing committed state.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -190,6 +196,9 @@ Automated verification now:
 - Injects conflicting capability advertisements, incomplete/unknown epoch headers, skipped future
   epochs, incomplete channel masks, interleaved fence IDs and completed-ID reuse, requiring every
   malformed transition to fail before state is committed or memory is retained.
+- Exercises the extracted inbound fence tracker directly with reordered and duplicate channel
+  markers, proving that exactly one full mask commits an epoch, recent retransmissions request an
+  idempotent ACK, stale IDs are ignored and clearing an incomplete fence cannot advance state.
 - Delays the local capability acknowledgement while allowing the remote advertisement to arrive,
   then verifies outbound gameplay remains unframed on strict channel 7 until confirmation. It also
   verifies pre-confirmation peers never receive the new ACK type, remain strict outbound, and can
