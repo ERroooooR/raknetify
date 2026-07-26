@@ -55,6 +55,25 @@ class CausalTransportProtocolTest {
     }
 
     @Test
+    void capabilitiesAcknowledgementRoundTrip() {
+        final ByteBuf encoded = CausalTransportProtocol.encodeCapabilitiesAck(
+                UnpooledByteBufAllocator.DEFAULT,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        try {
+            final var decoded =
+                    CausalTransportProtocol.decodeCapabilitiesAck(encoded);
+            assertEquals(CausalTransportProtocol.VERSION, decoded.version());
+            assertEquals(
+                    CausalTransportProtocol.LOCAL_CAPABILITIES,
+                    decoded.acknowledgedCapabilities()
+            );
+        } finally {
+            encoded.release();
+        }
+    }
+
+    @Test
     void gameplayEpochRequiresBothAtomicBundlesAndLosslessFences() {
         assertEquals(
                 CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE,

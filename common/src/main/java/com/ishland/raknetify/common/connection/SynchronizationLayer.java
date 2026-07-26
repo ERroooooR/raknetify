@@ -101,7 +101,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
         if (msg == SYNC_REQUEST_OBJECT) {
-            if (!CausalTransportProtocol.hasCapability(
+            if (!CausalTransportProtocol.hasOutboundCapability(
                     ctx.channel(),
                     CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
             )) {
@@ -197,7 +197,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         }
 
         try {
-            if (!CausalTransportProtocol.hasCapability(
+            if (!CausalTransportProtocol.hasInboundCapability(
                     ctx.channel(),
                     CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
             )) {

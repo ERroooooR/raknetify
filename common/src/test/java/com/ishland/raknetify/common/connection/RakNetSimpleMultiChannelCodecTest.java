@@ -181,6 +181,14 @@ class RakNetSimpleMultiChannelCodecTest {
             capabilityPayload.release();
         }
         assertFalse(channel.writeInbound(remoteCapabilities));
+        assertCapabilityAcknowledgement(
+                channel.readOutbound(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        assertFalse(channel.writeInbound(capabilityAckFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        )));
         assertTrue(codec.isAtomicBundleEnabled());
 
         final ChannelPromise openingPromise = channel.newPromise();
@@ -430,6 +438,141 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
+    void peerAdvertisementAloneCannotEnableCrossChannelCausalFrames() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(-1));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+
+        assertTrue(channel.writeOutbound(
+                RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL
+        ));
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+
+        assertFalse(channel.writeInbound(capabilityFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        )));
+        assertCapabilityAcknowledgement(
+                channel.readOutbound(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        assertFalse(codec.isAtomicBundleEnabled());
+        assertFalse(codec.isDependencyDomainsEnabled());
+
+        assertTrue(channel.writeOutbound(
+                Unpooled.wrappedBuffer(new byte[]{1})
+        ));
+        final FrameData preConfirmation = channel.readOutbound();
+        assertEquals(7, preConfirmation.getOrderChannel());
+        final ByteBuf preConfirmationPayload =
+                preConfirmation.createData().skipBytes(1);
+        try {
+            assertFalse(CausalTransportProtocol.isEpochGameplayFrame(
+                    preConfirmationPayload
+            ));
+        } finally {
+            preConfirmationPayload.release();
+            preConfirmation.release();
+        }
+
+        assertFalse(channel.writeInbound(capabilityAckFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        )));
+        assertTrue(codec.isAtomicBundleEnabled());
+        assertTrue(codec.isDependencyDomainsEnabled());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void peerWithoutConfirmationKeepsOutboundStrictButInboundCompatible() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(-1));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        final long legacyCapabilities =
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+                        & ~CausalTransportProtocol.CAPABILITY_CONFIRMATION;
+
+        assertTrue(channel.writeOutbound(
+                RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL
+        ));
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        assertFalse(channel.writeInbound(capabilityFrame(
+                channel,
+                legacyCapabilities
+        )));
+        assertNull(channel.readOutbound());
+        assertFalse(codec.isAtomicBundleEnabled());
+        assertFalse(codec.isDependencyDomainsEnabled());
+        assertEquals(
+                legacyCapabilities,
+                CausalTransportProtocol.getInboundCapabilities(channel)
+        );
+        assertEquals(
+                0L,
+                CausalTransportProtocol.getOutboundCapabilities(channel)
+        );
+
+        final ByteBuf original = Unpooled.wrappedBuffer(new byte[]{9, 4});
+        final ByteBuf encoded = CausalTransportProtocol.encodeGameplayFrame(
+                channel.alloc(),
+                0,
+                original
+        );
+        original.release();
+        final FrameData legacyPeerFrame;
+        try {
+            legacyPeerFrame = FrameData.create(
+                    channel.alloc(),
+                    0xfd,
+                    encoded
+            );
+            legacyPeerFrame.setOrderChannel(7);
+        } finally {
+            encoded.release();
+        }
+        assertTrue(channel.writeInbound(legacyPeerFrame));
+        assertPacket(channel.readInbound(), 9, 4);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void mismatchedCapabilityAcknowledgementFailsClosed() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+
+        assertTrue(channel.writeOutbound(
+                RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL
+        ));
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        assertFalse(channel.writeInbound(capabilityFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        )));
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+
+        assertThrows(
+                CorruptedFrameException.class,
+                () -> channel.writeInbound(capabilityAckFrame(
+                        channel,
+                        CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
+                ))
+        );
+        assertFalse(codec.isDependencyDomainsEnabled());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
     void gameplayFrameCannotSkipBeyondTheNextInboundEpoch() {
         final RakNetSimpleMultiChannelCodec codec =
                 new RakNetSimpleMultiChannelCodec(0xfd);
@@ -469,6 +612,14 @@ class RakNetSimpleMultiChannelCodecTest {
                 channel,
                 CausalTransportProtocol.LOCAL_CAPABILITIES
         )));
+        assertCapabilityAcknowledgement(
+                channel.readOutbound(),
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        assertFalse(channel.writeInbound(capabilityAckFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        )));
     }
 
     private static FrameData capabilityFrame(
@@ -491,6 +642,49 @@ class RakNetSimpleMultiChannelCodecTest {
             capabilityPayload.release();
         }
         return remoteCapabilities;
+    }
+
+    private static FrameData capabilityAckFrame(
+            EmbeddedChannel channel,
+            long acknowledgedCapabilities
+    ) {
+        final ByteBuf payload =
+                CausalTransportProtocol.encodeCapabilitiesAck(
+                        channel.alloc(),
+                        acknowledgedCapabilities
+                );
+        final FrameData acknowledgement;
+        try {
+            acknowledgement = FrameData.create(
+                    channel.alloc(),
+                    Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID,
+                    payload
+            );
+            acknowledgement.setOrderChannel(7);
+        } finally {
+            payload.release();
+        }
+        return acknowledgement;
+    }
+
+    private static void assertCapabilityAcknowledgement(
+            FrameData frame,
+            long expectedCapabilities
+    ) {
+        assertEquals(Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID, frame.getPacketId());
+        assertEquals(7, frame.getOrderChannel());
+        final ByteBuf payload = frame.createData().skipBytes(1);
+        try {
+            final CausalTransportProtocol.CapabilitiesAck acknowledgement =
+                    CausalTransportProtocol.decodeCapabilitiesAck(payload);
+            assertEquals(
+                    expectedCapabilities,
+                    acknowledgement.acknowledgedCapabilities()
+            );
+        } finally {
+            payload.release();
+            frame.release();
+        }
     }
 
     private static void assertPacket(ByteBuf packet, int... expected) {

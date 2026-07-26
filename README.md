@@ -113,9 +113,10 @@ storage is visible without stalling players.
 Raknetify defaults to the `compatibility` multichannel profile. Minecraft and mod loaders define
 implicit ordering between entity spawns, custom payloads, chunk state and bundle delimiters; those
 dependencies cannot be inferred safely from packet IDs. Compatibility mode therefore keeps every
-Minecraft game packet on one reliable ordered RakNet channel. This restores the original packet
-order and vanilla bundle atomicity while retaining RakNet congestion control, pacing, recovery,
-FEC, MTU discovery and compression.
+unknown packet, custom payload and entity/world/container packet on one reliable ordered RakNet
+channel. Chunk/light/biome bulk currently shares that same strict FIFO. This restores the original
+causal order and vanilla bundle atomicity while retaining RakNet congestion control, pacing,
+recovery, FEC, MTU discovery and compression.
 
 The previous packet-class-based channel split remains available for controlled comparison with:
 
@@ -124,19 +125,22 @@ The previous packet-class-based channel split remains available for controlled c
 ```
 
 `aggressive` can reduce head-of-line blocking, but is not the default because unknown mod payloads
-may overtake the entity, world or inventory state they reference. It remains on the strict stream
-until both peers negotiate atomic-bundle support; an older peer therefore cannot accidentally
-enable the unsafe delimiter-dropping behavior. Negotiated bundles are sent as one logical game
-frame and reconstructed synchronously on receipt, while still using RakNet compression,
-fragmentation and recovery.
+may overtake the entity, world or inventory state they reference. Compatibility mode reopens only
+the explicitly tested independent-control and ephemeral-effect domains. They remain strict until
+the peer acknowledges receipt of Raknetify's capability advertisement; accepting a local control
+write is not treated as negotiation because channel 1 or 4 could overtake that advertisement on
+channel 7. A peer without confirmation support stays strict and unframed outbound. Negotiated
+bundles are sent as one logical game frame and reconstructed synchronously on receipt, while still
+using RakNet compression, fragmentation and recovery.
 
 Dimension and backend transitions use a negotiated lossless drain fence. Raknetify appends a
 reliable marker to every ordered channel, holds later writes until the peer has received all
 markers, then advances a gameplay epoch. Old-epoch frames are discarded and future-epoch frames
 wait behind the transition gate. This replaces the previous queue deletion and order-index rewrite
 behavior; reliable packet promises are never reported successful merely because a transition
-occurred. Future dependency-domain support will selectively reopen only proven-independent
-channels without requiring per-mod compatibility IDs.
+occurred. A work-conserving dependency-domain scheduler selectively reopens only the two
+proven-independent domains, preserves FIFO within each domain, and leaves mod-defined state on the
+strict stream without requiring per-mod compatibility IDs.
 
 ## BandwidthOptimizer compatibility
 

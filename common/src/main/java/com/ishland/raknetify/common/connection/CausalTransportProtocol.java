@@ -48,11 +48,22 @@ public final class CausalTransportProtocol {
     public static final long CAPABILITY_ATOMIC_BUNDLE = 1L;
     public static final long CAPABILITY_LOSSLESS_FENCE = 1L << 1;
     public static final long CAPABILITY_GAMEPLAY_EPOCH = 1L << 2;
+    /**
+     * The peer confirms receipt of our advertisement before we emit any
+     * capability-dependent frame. Without this handshake, gameplay on another
+     * order channel can overtake the channel-7 advertisement.
+     */
+    public static final long CAPABILITY_CONFIRMATION = 1L << 3;
     public static final long LOCAL_CAPABILITIES = CAPABILITY_ATOMIC_BUNDLE
             | CAPABILITY_LOSSLESS_FENCE
-            | CAPABILITY_GAMEPLAY_EPOCH;
+            | CAPABILITY_GAMEPLAY_EPOCH
+            | CAPABILITY_CONFIRMATION;
     public static final AttributeKey<Long> NEGOTIATED_CAPABILITIES =
             AttributeKey.valueOf("raknetify:causal-capabilities");
+    public static final AttributeKey<Long> INBOUND_CAPABILITIES =
+            AttributeKey.valueOf("raknetify:causal-inbound-capabilities");
+    public static final AttributeKey<Long> OUTBOUND_CAPABILITIES =
+            AttributeKey.valueOf("raknetify:causal-outbound-capabilities");
 
     public static final int MAX_ATOMIC_BUNDLE_PACKETS = 4096;
     public static final int MAX_ATOMIC_BUNDLE_BYTES = 64 * 1024 * 1024;
@@ -60,6 +71,7 @@ public final class CausalTransportProtocol {
 
     private static final int CONTROL_MAGIC = 0x524b4331; // "RKC1"
     private static final int CONTROL_CAPABILITIES = 1;
+    private static final int CONTROL_CAPABILITIES_ACK = 2;
     private static final int EPOCH_FRAME_VERSION = 2;
     private static final int EPOCH_FRAME_SINGLE = 1;
     private static final int EPOCH_FRAME_BUNDLE = 2;
@@ -73,14 +85,49 @@ public final class CausalTransportProtocol {
     }
 
     public static ByteBuf encodeCapabilities(ByteBufAllocator allocator, long capabilities) {
+        return encodeControl(allocator, CONTROL_CAPABILITIES, capabilities);
+    }
+
+    public static ByteBuf encodeCapabilitiesAck(
+            ByteBufAllocator allocator,
+            long acknowledgedCapabilities
+    ) {
+        return encodeControl(
+                allocator,
+                CONTROL_CAPABILITIES_ACK,
+                acknowledgedCapabilities
+        );
+    }
+
+    private static ByteBuf encodeControl(
+            ByteBufAllocator allocator,
+            int type,
+            long capabilities
+    ) {
         return allocator.buffer(14, 14)
                 .writeInt(CONTROL_MAGIC)
                 .writeByte(VERSION)
-                .writeByte(CONTROL_CAPABILITIES)
+                .writeByte(type)
                 .writeLong(capabilities);
     }
 
     public static Capabilities decodeCapabilities(ByteBuf payload) {
+        final ControlMessage message = decodeControl(payload);
+        if (message instanceof Capabilities capabilities) {
+            return capabilities;
+        }
+        throw new CorruptedFrameException("Expected causal capabilities advertisement");
+    }
+
+    public static CapabilitiesAck decodeCapabilitiesAck(ByteBuf payload) {
+        final ControlMessage message = decodeControl(payload);
+        if (message instanceof CapabilitiesAck ack) {
+            return ack;
+        }
+        throw new CorruptedFrameException("Expected causal capabilities acknowledgement");
+    }
+
+    public static ControlMessage decodeControl(ByteBuf payload) {
         if (payload.readableBytes() != 14) {
             throw new CorruptedFrameException("Invalid causal capability payload length: "
                     + payload.readableBytes());
@@ -91,10 +138,16 @@ public final class CausalTransportProtocol {
         }
         final int version = payload.readUnsignedByte();
         final int type = payload.readUnsignedByte();
-        if (type != CONTROL_CAPABILITIES) {
-            throw new CorruptedFrameException("Unexpected causal control message type: " + type);
-        }
-        return new Capabilities(version, payload.readLong());
+        final long capabilities = payload.readLong();
+        return switch (type) {
+            case CONTROL_CAPABILITIES ->
+                    new Capabilities(version, capabilities);
+            case CONTROL_CAPABILITIES_ACK ->
+                    new CapabilitiesAck(version, capabilities);
+            default -> throw new CorruptedFrameException(
+                    "Unexpected causal control message type: " + type
+            );
+        };
     }
 
     public static long negotiateCapabilities(long remoteCapabilities) {
@@ -107,19 +160,70 @@ public final class CausalTransportProtocol {
     }
 
     public static void setNegotiatedCapabilities(Channel channel, long capabilities) {
-        channel.attr(NEGOTIATED_CAPABILITIES).set(capabilities);
-        if (channel.parent() != null) {
-            channel.parent().attr(NEGOTIATED_CAPABILITIES).set(capabilities);
-        }
+        setCapabilities(channel, INBOUND_CAPABILITIES, capabilities);
+        setCapabilities(channel, OUTBOUND_CAPABILITIES, capabilities);
+        setCapabilities(channel, NEGOTIATED_CAPABILITIES, capabilities);
+    }
+
+    public static void setInboundCapabilities(Channel channel, long capabilities) {
+        setCapabilities(channel, INBOUND_CAPABILITIES, capabilities);
+        updateCombinedCapabilities(channel);
+    }
+
+    public static void setOutboundCapabilities(Channel channel, long capabilities) {
+        setCapabilities(channel, OUTBOUND_CAPABILITIES, capabilities);
+        updateCombinedCapabilities(channel);
     }
 
     public static long getNegotiatedCapabilities(Channel channel) {
-        final Long capabilities = channel.attr(NEGOTIATED_CAPABILITIES).get();
-        return capabilities == null ? 0L : capabilities;
+        return getCapabilities(channel, NEGOTIATED_CAPABILITIES);
+    }
+
+    public static long getInboundCapabilities(Channel channel) {
+        return getCapabilities(channel, INBOUND_CAPABILITIES);
+    }
+
+    public static long getOutboundCapabilities(Channel channel) {
+        return getCapabilities(channel, OUTBOUND_CAPABILITIES);
     }
 
     public static boolean hasCapability(Channel channel, long capability) {
         return (getNegotiatedCapabilities(channel) & capability) != 0;
+    }
+
+    public static boolean hasInboundCapability(Channel channel, long capability) {
+        return (getInboundCapabilities(channel) & capability) != 0;
+    }
+
+    public static boolean hasOutboundCapability(Channel channel, long capability) {
+        return (getOutboundCapabilities(channel) & capability) != 0;
+    }
+
+    private static void updateCombinedCapabilities(Channel channel) {
+        setCapabilities(
+                channel,
+                NEGOTIATED_CAPABILITIES,
+                getInboundCapabilities(channel) & getOutboundCapabilities(channel)
+        );
+    }
+
+    private static void setCapabilities(
+            Channel channel,
+            AttributeKey<Long> key,
+            long capabilities
+    ) {
+        channel.attr(key).set(capabilities);
+        if (channel.parent() != null) {
+            channel.parent().attr(key).set(capabilities);
+        }
+    }
+
+    private static long getCapabilities(
+            Channel channel,
+            AttributeKey<Long> key
+    ) {
+        final Long capabilities = channel.attr(key).get();
+        return capabilities == null ? 0L : capabilities;
     }
 
     public static boolean isAtomicBundle(ByteBuf payload) {
@@ -354,7 +458,17 @@ public final class CausalTransportProtocol {
         }
     }
 
-    public record Capabilities(int version, long capabilities) {
+    public sealed interface ControlMessage
+            permits Capabilities, CapabilitiesAck {
+        int version();
+    }
+
+    public record Capabilities(int version, long capabilities)
+            implements ControlMessage {
+    }
+
+    public record CapabilitiesAck(int version, long acknowledgedCapabilities)
+            implements ControlMessage {
     }
 
     public record GameplayFrame(int epoch, boolean atomicBundle, List<ByteBuf> packets) {

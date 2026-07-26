@@ -42,6 +42,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -171,6 +172,36 @@ class SynchronizationLayerTest {
         while ((outbound = channel.readOutbound()) != null) {
             ReferenceCountUtil.safeRelease(outbound);
         }
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void inboundFenceCapabilityCannotAuthorizeAnOutboundFence() {
+        final EmbeddedChannel channel = new EmbeddedChannel(
+                new SynchronizationLayer()
+        );
+        CausalTransportProtocol.setInboundCapabilities(
+                channel,
+                CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+        );
+
+        final ChannelPromise fencePromise = channel.newPromise();
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                fencePromise
+        );
+        channel.pipeline().flush();
+
+        assertTrue(fencePromise.isSuccess());
+        assertNull(channel.readOutbound());
+        assertFalse(CausalTransportProtocol.hasOutboundCapability(
+                channel,
+                CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+        ));
+        assertTrue(CausalTransportProtocol.hasInboundCapability(
+                channel,
+                CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
+        ));
         assertFalse(channel.finishAndReleaseAll());
     }
 

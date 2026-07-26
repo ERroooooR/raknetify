@@ -242,6 +242,10 @@ class CausalMultichannelFaultInjectionTest {
 
         deliverInOrder(drainOutbound(first.channel), second.channel);
         deliverInOrder(drainOutbound(second.channel), first.channel);
+        // The second delivery contains the acknowledgement for the first
+        // endpoint. Deliver the reciprocal acknowledgement produced by the
+        // first endpoint before either side may reopen independent domains.
+        deliverInOrder(drainOutbound(first.channel), second.channel);
         assertTrue(first.codec.isDependencyDomainsEnabled());
         assertTrue(second.codec.isDependencyDomainsEnabled());
     }

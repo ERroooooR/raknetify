@@ -31,7 +31,6 @@ import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.CorruptedFrameException;
@@ -58,6 +57,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private final BoundedPendingWriteQueue pendingWrites;
     private final BoundedPendingWriteQueue pendingControlWrites;
     private final DependencyDomainScheduler<ScheduledWrite> domainScheduler;
+    private final CausalCapabilityNegotiator capabilityNegotiator =
+            new CausalCapabilityNegotiator();
 
     public RakNetSimpleMultiChannelCodec(int packetId) {
         this(
@@ -115,11 +116,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private boolean isMultichannelEnabled;
-    private boolean localCapabilitiesSent;
-    private boolean remoteCapabilitiesReceived;
-    private int remoteCapabilityVersion;
-    private long remoteAdvertisedCapabilities;
-    private long remoteCapabilities;
     private boolean waitingForEpochFence;
     private int outboundEpoch;
     private int inboundEpoch;
@@ -138,6 +134,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         failPendingControlWrites(ctx, cause);
         failPendingInboundEpochFrames(ctx);
         failScheduledWrites(ctx, cause);
+        capabilityNegotiator.clear(ctx.channel());
         super.handlerRemoved(ctx);
     }
 
@@ -161,7 +158,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 System.out.println("Raknetify: [MultiChannellingDataCodec] Failed to start multichannel: not available");
                 return;
             }
-            sendCapabilities(ctx, false);
+            capabilityNegotiator.sendAdvertisement(ctx, false);
             final ByteBuf buf = ctx.alloc().buffer(1).writeByte(0);
             try {
                 final FrameData frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_PING_PACKET_ID, buf);
@@ -191,7 +188,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 // request and must enter FrameOrderOut before its markers.
                 drainScheduledWrites(ctx);
                 this.isMultichannelEnabled = false;
-                if (isGameplayEpochNegotiated()) {
+                if (isOutboundGameplayEpochNegotiated()) {
                     waitingForEpochFence = true;
                     queuePendingWrites = true;
                     promise.addListener(future -> {
@@ -514,41 +511,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
     }
 
-    private void sendCapabilities(ChannelHandlerContext ctx, boolean flush) {
-        if (localCapabilitiesSent) {
-            return;
-        }
-        final ByteBuf payload = CausalTransportProtocol.encodeCapabilities(
-                ctx.alloc(),
-                CausalTransportProtocol.LOCAL_CAPABILITIES
-        );
-        FrameData frameData = null;
-        try {
-            frameData = FrameData.create(
-                    ctx.alloc(),
-                    Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID,
-                    payload
-            );
-            frameData.setOrderChannel(7);
-            localCapabilitiesSent = true;
-            final ChannelFuture writeFuture = flush
-                    ? ctx.writeAndFlush(frameData)
-                    : ctx.write(frameData);
-            frameData = null;
-            writeFuture.addListener(future -> {
-                if (!future.isSuccess()) {
-                    localCapabilitiesSent = false;
-                    CausalTransportProtocol.setNegotiatedCapabilities(ctx.channel(), 0L);
-                }
-            });
-        } finally {
-            payload.release();
-            ReferenceCountUtil.safeRelease(frameData);
-        }
-    }
-
     public boolean isAtomicBundleEnabled() {
-        return isMultichannelEnabled && isAtomicBundleNegotiated();
+        return isMultichannelEnabled && isOutboundAtomicBundleNegotiated();
     }
 
     public boolean isDependencyDomainsEnabled() {
@@ -556,22 +520,36 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 | CausalTransportProtocol.CAPABILITY_LOSSLESS_FENCE
                 | CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH;
         return isMultichannelEnabled
-                && localCapabilitiesSent
-                && (remoteCapabilities & required) == required;
+                && capabilityNegotiator.hasAllOutbound(required);
     }
 
-    private boolean isAtomicBundleNegotiated() {
-        return localCapabilitiesSent
-                && (remoteCapabilities & CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE) != 0;
+    private boolean isOutboundAtomicBundleNegotiated() {
+        return capabilityNegotiator.hasOutbound(
+                CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
+        );
     }
 
-    private boolean isGameplayEpochNegotiated() {
-        return localCapabilitiesSent
-                && (remoteCapabilities & CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH) != 0;
+    private boolean isInboundAtomicBundleNegotiated() {
+        return capabilityNegotiator.hasInbound(
+                CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
+        );
+    }
+
+    private boolean isOutboundGameplayEpochNegotiated() {
+        return capabilityNegotiator.hasOutbound(
+                CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH
+        );
+    }
+
+    private boolean isInboundGameplayEpochNegotiated() {
+        return capabilityNegotiator.hasInbound(
+                CausalTransportProtocol.CAPABILITY_GAMEPLAY_EPOCH
+        );
     }
 
     private boolean isGameplayEpochFramingEnabled() {
-        return isGameplayEpochNegotiated() && (isMultichannelEnabled || outboundEpoch > 0);
+        return isOutboundGameplayEpochNegotiated()
+                && (isMultichannelEnabled || outboundEpoch > 0);
     }
 
     protected boolean isMultichannelAvailable() {
@@ -736,7 +714,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             try {
                 if (packetId == packet.getPacketId()) {
                     final ByteBuf payload = packet.createData().skipBytes(1);
-                    if (isGameplayEpochNegotiated()
+                    if (isInboundGameplayEpochNegotiated()
                             && CausalTransportProtocol.isEpochGameplayFrame(payload)) {
                         if (CausalTransportProtocol.isEpochAtomicBundle(payload)
                                 && (!packet.getReliability().isReliable
@@ -748,7 +726,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                             );
                         }
                         handleEpochGameplayFrame(ctx, payload);
-                    } else if (isGameplayEpochNegotiated() && inboundEpoch > 0) {
+                    } else if (isInboundGameplayEpochNegotiated()
+                            && inboundEpoch > 0) {
                         // A completed drain fence proves that no unframed packet
                         // from the previous epoch may still be valid.
                         final SimpleMetricsLogger metrics = metrics(ctx);
@@ -756,7 +735,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                             metrics.causalStaleFrameDropped();
                         }
                         payload.release();
-                    } else if (isAtomicBundleNegotiated()
+                    } else if (isInboundAtomicBundleNegotiated()
                             && CausalTransportProtocol.isAtomicBundle(payload)) {
                         if (!packet.getReliability().isReliable
                                 || !packet.getReliability().isOrdered
@@ -771,7 +750,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                         ctx.fireChannelRead(payload);
                     }
                 } else if (packet.getPacketId() == Constants.RAKNET_CAUSAL_CONTROL_PACKET_ID) {
-                    handleCapabilities(ctx, packet);
+                    capabilityNegotiator.handleControl(ctx, packet);
                 } else if (packet.getPacketId() == Constants.RAKNET_PING_PACKET_ID) {
                     return;
                 } else {
@@ -783,42 +762,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return;
         }
         super.channelRead(ctx, msg);
-    }
-
-    private void handleCapabilities(ChannelHandlerContext ctx, FrameData packet) {
-        if (!packet.getReliability().isReliable
-                || !packet.getReliability().isOrdered
-                || packet.getOrderChannel() != 7) {
-            throw new CorruptedFrameException(
-                    "Causal capabilities were not delivered on reliable ordered channel 7"
-            );
-        }
-        final ByteBuf payload = packet.createData().skipBytes(1);
-        try {
-            final CausalTransportProtocol.Capabilities capabilities =
-                    CausalTransportProtocol.decodeCapabilities(payload);
-            if (remoteCapabilitiesReceived) {
-                if (capabilities.version() != remoteCapabilityVersion
-                        || capabilities.capabilities()
-                        != remoteAdvertisedCapabilities) {
-                    throw new CorruptedFrameException(
-                            "Causal capabilities changed after negotiation"
-                    );
-                }
-                sendCapabilities(ctx, true);
-                return;
-            }
-            remoteCapabilitiesReceived = true;
-            remoteCapabilityVersion = capabilities.version();
-            remoteAdvertisedCapabilities = capabilities.capabilities();
-            remoteCapabilities = capabilities.version() == CausalTransportProtocol.VERSION
-                    ? CausalTransportProtocol.negotiateCapabilities(capabilities.capabilities())
-                    : 0L;
-            CausalTransportProtocol.setNegotiatedCapabilities(ctx.channel(), remoteCapabilities);
-            sendCapabilities(ctx, true);
-        } finally {
-            payload.release();
-        }
     }
 
     private void fireAtomicBundle(ChannelHandlerContext ctx, ByteBuf payload) {

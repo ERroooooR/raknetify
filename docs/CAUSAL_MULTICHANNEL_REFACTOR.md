@@ -16,7 +16,8 @@ Each stage must preserve these invariants:
 Current implementation status:
 
 - Stage 1: implemented.
-- Stage 2: implemented with application-level capability negotiation and bounded envelopes.
+- Stage 2: implemented with confirmed application-level capability negotiation and bounded
+  envelopes.
 - Stage 3: implemented with per-channel drain markers, acknowledgements and gameplay epochs.
 - Stage 4: implemented with conservative domain classification, negotiated
   reopening and deficit round-robin scheduling.
@@ -41,12 +42,24 @@ complex entity spawning, Touhou Little Maid entity payloads and other unknown mo
 - Negotiate support through a versioned reliable control frame. Old peers discard that unknown
   Raknetify frame safely, so aggressive routing stays disabled instead of sending an unsupported
   envelope.
+- Require an explicit receipt acknowledgement before the sender uses any advertised capability.
+  Advertisement and acknowledgement use reliable ordered channel 7. Merely accepting the local
+  advertisement write is insufficient because causal gameplay on channel 1 or 4 could otherwise
+  reach the peer before that channel-7 advertisement.
 - Bound envelopes to 4096 packets and 64 MiB, validate matching delimiters and trailing data, and
   complete every original packet promise from the single envelope write result.
 
 An envelope is required before unrelated channels can be reopened: sending delimiters on one
 channel is insufficient because a later packet on another channel can overtake the closing
 delimiter and be consumed as part of the wrong bundle.
+
+Negotiation tracks inbound and outbound readiness independently. Receiving an advertisement makes
+the endpoint ready to decode that peer's causal frames; sending causal frames is authorized only
+after the peer confirms this endpoint's advertisement. The confirmation extension is itself
+capability-gated, so a new endpoint never sends an unknown ACK control type to an older endpoint.
+With a pre-confirmation peer, the new endpoint remains strict and unframed outbound while retaining
+the ability to decode that peer's legacy causal frames. Lossless-fence authorization uses the same
+directional state instead of a single bidirectional boolean.
 
 ## Stage 3: lossless fences and epochs
 
@@ -157,6 +170,10 @@ Automated verification now:
 - Injects conflicting capability advertisements, incomplete/unknown epoch headers, skipped future
   epochs, incomplete channel masks, interleaved fence IDs and completed-ID reuse, requiring every
   malformed transition to fail before state is committed or memory is retained.
+- Delays the local capability acknowledgement while allowing the remote advertisement to arrive,
+  then verifies outbound gameplay remains unframed on strict channel 7 until confirmation. It also
+  verifies pre-confirmation peers never receive the new ACK type, remain strict outbound, and can
+  still send legacy causal frames inbound.
 - Verifies the Bungee synthetic Login/Respawn/configuration switch sequence consumes one pre-gate,
   closes at Commands and leaves later ordinary Respawns free to request their own fence.
 - Verifies Velocity fast/safe synthetic JoinGame/Respawn/configuration sequences consume one
