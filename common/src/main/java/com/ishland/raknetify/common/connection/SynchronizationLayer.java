@@ -27,15 +27,13 @@ package com.ishland.raknetify.common.connection;
 import com.ishland.raknetify.common.Constants;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.util.ReferenceCountUtil;
 import network.ycc.raknet.frame.FrameData;
 import network.ycc.raknet.RakNet;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Lossless cross-channel drain fence.
@@ -51,14 +49,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
     public static final Object SYNC_REQUEST_OBJECT = new Object();
 
     private final int activeChannelMask;
-    private final BoundedPendingWriteQueue queuedWrites;
-    private final List<ChannelPromise> activeFencePromises = new ArrayList<>();
-
-    private boolean waitingForAck;
-    private long nextFenceId = 1L;
-    private long activeFenceId;
-    private int activeFenceEpoch;
-    private int outboundEpoch;
+    private final OutboundCausalFenceController outboundFenceController;
     private final InboundCausalFenceTracker inboundFenceTracker;
 
     public SynchronizationLayer(int... channelsToIgnore) {
@@ -74,7 +65,7 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             int maxPendingWrites,
             int maxPendingWriteBytes
     ) {
-        this.queuedWrites = new BoundedPendingWriteQueue(
+        this.outboundFenceController = new OutboundCausalFenceController(
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
@@ -109,76 +100,74 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                 promise.trySuccess();
                 return;
             }
-            if (waitingForAck) {
-                queuePendingWrite(ctx, msg, promise);
+            if (outboundFenceController.waitingForAck()) {
+                outboundFenceController.hold(ctx, msg, promise);
                 return;
             }
             beginFence(ctx, promise);
             return;
         }
-        if (waitingForAck) {
-            queuePendingWrite(ctx, msg, promise);
+        if (outboundFenceController.waitingForAck()) {
+            outboundFenceController.hold(ctx, msg, promise);
             return;
         }
         super.write(ctx, msg, promise);
     }
 
     private void beginFence(ChannelHandlerContext ctx, ChannelPromise promise) {
-        if (outboundEpoch == Integer.MAX_VALUE) {
-            final IllegalStateException exception =
-                    new IllegalStateException("Gameplay epoch exhausted");
-            promise.tryFailure(exception);
-            ctx.fireExceptionCaught(exception);
+        final OutboundCausalFenceController.Fence fence =
+                outboundFenceController.begin(ctx, promise);
+        if (fence == null) {
             return;
         }
 
-        waitingForAck = true;
-        activeFenceId = nextFenceId++;
-        activeFenceEpoch = outboundEpoch + 1;
-        activeFencePromises.add(promise);
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalFenceStarted(activeFenceEpoch);
-        }
-
-        for (int channel = 0; channel < CausalFenceProtocol.ORDER_CHANNEL_COUNT; channel++) {
-            if ((activeChannelMask & 1 << channel) == 0) {
-                continue;
+        try {
+            for (int channel = 0;
+                 channel < CausalFenceProtocol.ORDER_CHANNEL_COUNT;
+                 channel++) {
+                if ((activeChannelMask & 1 << channel) == 0) {
+                    continue;
+                }
+                writeFenceRequest(
+                        ctx,
+                        fence,
+                        activeChannelMask,
+                        channel
+                );
             }
-            writeFenceRequest(
-                    ctx,
-                    activeFenceId,
-                    activeFenceEpoch,
-                    activeChannelMask,
-                    channel
-            );
+            ctx.flush();
+        } catch (Throwable throwable) {
+            outboundFenceController.fail(ctx, fence, throwable);
         }
-        ctx.flush();
     }
 
     private void writeFenceRequest(
             ChannelHandlerContext ctx,
-            long fenceId,
-            int epoch,
+            OutboundCausalFenceController.Fence fence,
             int channelMask,
             int channel
     ) {
         final ByteBuf payload = CausalFenceProtocol.encodeRequest(
                 ctx.alloc(),
-                fenceId,
-                epoch,
+                fence.id(),
+                fence.epoch(),
                 channelMask
         );
         FrameData frameData = null;
         try {
             frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, payload);
             frameData.setOrderChannel(channel);
-            ctx.write(frameData).addListener(future -> {
+            final ChannelFuture writeFuture = ctx.write(frameData);
+            frameData = null;
+            writeFuture.addListener(future -> {
                 if (!future.isSuccess()) {
-                    failActiveFence(ctx, future.cause());
+                    outboundFenceController.fail(
+                            ctx,
+                            fence,
+                            future.cause()
+                    );
                 }
             });
-            frameData = null;
         } finally {
             payload.release();
             ReferenceCountUtil.safeRelease(frameData);
@@ -247,12 +236,13 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         try {
             frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_SYNC_PACKET_ID, payload);
             frameData.setOrderChannel(7);
-            ctx.writeAndFlush(frameData).addListener(future -> {
+            final ChannelFuture writeFuture = ctx.writeAndFlush(frameData);
+            frameData = null;
+            writeFuture.addListener(future -> {
                 if (!future.isSuccess()) {
                     ctx.fireExceptionCaught(future.cause());
                 }
             });
-            frameData = null;
         } finally {
             payload.release();
             ReferenceCountUtil.safeRelease(frameData);
@@ -268,37 +258,19 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         if (packet.getOrderChannel() != 7) {
             throw new CorruptedFrameException("Causal fence ACK must use channel 7");
         }
-        if (!waitingForAck || ack.fenceId() < activeFenceId) {
+        final OutboundCausalFenceController.Completion completion =
+                outboundFenceController.acknowledge(
+                        ctx,
+                        ack,
+                        (message, promise) -> write(ctx, message, promise)
+                );
+        if (completion == null) {
             return;
         }
-        if (ack.fenceId() != activeFenceId || ack.epoch() != activeFenceEpoch) {
-            throw new CorruptedFrameException("Unexpected causal fence ACK");
-        }
-
-        final int completedEpoch = activeFenceEpoch;
-        final List<ChannelPromise> completedPromises =
-                new ArrayList<>(activeFencePromises);
-        activeFencePromises.clear();
-        waitingForAck = false;
-        outboundEpoch = completedEpoch;
-        activeFenceId = 0L;
-        activeFenceEpoch = 0;
-        final Throwable replayFailure = flushQueuedWrites(ctx);
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (replayFailure != null) {
-            if (metrics != null) {
-                metrics.causalFenceFailed();
-            }
-            completedPromises.forEach(promise ->
-                    promise.tryFailure(replayFailure)
-            );
-            return;
-        }
-        if (metrics != null) {
-            metrics.causalFenceCompleted(outboundEpoch);
-        }
-        ctx.fireUserEventTriggered(new OutboundEpochAdvanced(completedEpoch));
-        completedPromises.forEach(ChannelPromise::trySuccess);
+        ctx.fireUserEventTriggered(
+                new OutboundEpochAdvanced(completion.epoch())
+        );
+        completion.succeed();
     }
 
     private static void requireReliableOrdered(FrameData packet, String description) {
@@ -310,112 +282,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
         }
     }
 
-    private Throwable flushQueuedWrites(ChannelHandlerContext ctx) {
-        BoundedPendingWriteQueue.PendingWrite pendingWrite;
-        boolean replayedWrite = false;
-        while (!waitingForAck && (pendingWrite = queuedWrites.poll()) != null) {
-            recordPendingWriteQueueState(ctx);
-            try {
-                write(ctx, pendingWrite.message(), pendingWrite.promise());
-                replayedWrite = true;
-            } catch (Throwable throwable) {
-                pendingWrite.promise().tryFailure(throwable);
-                ReferenceCountUtil.safeRelease(pendingWrite.message());
-                failQueuedWrites(ctx, throwable);
-                ctx.fireExceptionCaught(throwable);
-                ctx.close();
-                return throwable;
-            }
-        }
-        if (replayedWrite) {
-            ctx.flush();
-        }
-        return null;
-    }
-
-    private void failActiveFence(ChannelHandlerContext ctx, Throwable cause) {
-        if (!ctx.channel().eventLoop().inEventLoop()) {
-            ctx.channel().eventLoop().execute(() -> failActiveFence(ctx, cause));
-            return;
-        }
-        if (!waitingForAck) {
-            return;
-        }
-        waitingForAck = false;
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalFenceFailed();
-        }
-        activeFencePromises.forEach(promise -> promise.tryFailure(cause));
-        activeFencePromises.clear();
-        failQueuedWrites(ctx, cause);
-        ctx.fireExceptionCaught(cause);
-        ctx.close();
-    }
-
-    private void queuePendingWrite(
-            ChannelHandlerContext ctx,
-            Object message,
-            ChannelPromise promise
-    ) {
-        if (!queuedWrites.tryAdd(message, promise)) {
-            final CorruptedFrameException exception = new CorruptedFrameException(
-                    "Pending causal fence queue exceeded its bound "
-                            + "(frames=" + queuedWrites.size()
-                            + ", bytes=" + queuedWrites.bytes() + ")"
-            );
-            promise.tryFailure(exception);
-            ReferenceCountUtil.safeRelease(message);
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalOutboundQueueOverflow(
-                        SimpleMetricsLogger.CausalOutboundQueue.FENCE
-                );
-            }
-            failActiveFence(ctx, exception);
-            return;
-        }
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundFrameQueued(
-                    SimpleMetricsLogger.CausalOutboundQueue.FENCE,
-                    queuedWrites.size(),
-                    queuedWrites.bytes()
-            );
-        }
-    }
-
-    private void failQueuedWrites(
-            ChannelHandlerContext ctx,
-            Throwable cause
-    ) {
-        queuedWrites.failAll(cause);
-        recordPendingWriteQueueState(ctx);
-    }
-
-    private void recordPendingWriteQueueState(ChannelHandlerContext ctx) {
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundQueueState(
-                    SimpleMetricsLogger.CausalOutboundQueue.FENCE,
-                    queuedWrites.size(),
-                    queuedWrites.bytes()
-            );
-        }
-    }
-
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
-        if (waitingForAck) {
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalFenceFailed();
-            }
-        }
-        activeFencePromises.forEach(promise -> promise.tryFailure(cause));
-        activeFencePromises.clear();
-        failQueuedWrites(ctx, cause);
+        outboundFenceController.close(ctx, cause);
         inboundFenceTracker.clearActive();
         super.handlerRemoved(ctx);
     }

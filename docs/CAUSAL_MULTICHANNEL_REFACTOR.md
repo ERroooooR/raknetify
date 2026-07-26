@@ -116,6 +116,15 @@ channel has arrived, treats retransmitted markers for the most recently complete
 idempotent ACK request, ignores older fence IDs, and rejects channel-mask mismatches, skipped
 epochs, interleaved IDs or completed-ID reuse before changing committed state.
 
+The outbound fence controller owns the active fence promises and every later write retained behind
+its ACK. ACK handling detaches the completed fence before replay, so a queued transition can begin
+the next fence re-entrantly without mixing the two fences' epochs or promises. Queue overflow,
+marker write failure, replay failure and handler removal all converge on one fail-closed ownership
+path. Synchronous marker construction/write/flush failures are handled by that same path instead of
+leaving the connection indefinitely waiting for an ACK that can never arrive. Each asynchronous
+marker failure also carries its originating fence ID and epoch, so a delayed callback from a
+completed fence cannot accidentally fail a newer active fence.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -199,6 +208,10 @@ Automated verification now:
 - Exercises the extracted inbound fence tracker directly with reordered and duplicate channel
   markers, proving that exactly one full mask commits an epoch, recent retransmissions request an
   idempotent ACK, stale IDs are ignored and clearing an incomplete fence cannot advance state.
+- Exercises the extracted outbound fence controller directly: ACK completion detaches the old
+  promises before a queued fence starts re-entrantly, stale ACKs are ignored, future/mismatched
+  ACKs fail closed, delayed failures cannot cross fence generations, and overflow, replay failure
+  or removal releases every owned write.
 - Delays the local capability acknowledgement while allowing the remote advertisement to arrive,
   then verifies outbound gameplay remains unframed on strict channel 7 until confirmation. It also
   verifies pre-confirmation peers never receive the new ACK type, remain strict outbound, and can
