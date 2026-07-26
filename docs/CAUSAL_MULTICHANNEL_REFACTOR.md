@@ -132,6 +132,13 @@ generation, and a delayed completion/failure from the previous generation cannot
 new gate. The same object validates sequential outbound epochs and owns all queued application
 references through replay, overflow and channel removal.
 
+Atomic bundle assembly and the control signals blocked by an open bundle share one outbound
+controller. A completed bundle transfers its envelope and original packet promises together; only
+after the envelope's outbound promise succeeds may retained restart/fence signals replay.
+Assembly failure, envelope write failure/cancellation, control overflow, replay failure and channel
+removal fail both sides of the boundary together. A failed bundle can therefore no longer leave old
+control signals stranded while newer transition signals pass them.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -222,6 +229,9 @@ Automated verification now:
 - Exercises the outbound gameplay gate directly: a queued start barrier stops replay and retains
   later application writes under a new generation, stale generation failures are ignored, epoch
   advances are sequential, and overflow/replay/removal failures release every owned reference.
+- Exercises the outbound atomic-bundle controller directly: completion preserves packet/control
+  order, while assembly failure, envelope failure handling, control overflow, replay failure and
+  removal abort the bundle and release every still-owned control write.
 - Delays the local capability acknowledgement while allowing the remote advertisement to arrive,
   then verifies outbound gameplay remains unframed on strict channel 7 until confirmation. It also
   verifies pre-confirmation peers never receive the new ACK type, remain strict outbound, and can

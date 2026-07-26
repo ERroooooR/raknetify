@@ -44,6 +44,7 @@ import network.ycc.raknet.packet.FramedPacket;
 import network.ycc.raknet.RakNet;
 
 import java.util.List;
+import java.util.concurrent.CancellationException;
 
 public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
@@ -53,7 +54,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private final int packetId;
     private final OutboundGameplayEpochGate outboundGameplayGate;
-    private final BoundedPendingWriteQueue pendingControlWrites;
+    private final OutboundAtomicBundleController outboundBundleController;
     private final DependencyDomainFrameScheduler domainFrameScheduler;
     private final CausalCapabilityNegotiator capabilityNegotiator =
             new CausalCapabilityNegotiator();
@@ -81,7 +82,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
-        this.pendingControlWrites = new BoundedPendingWriteQueue(
+        this.outboundBundleController = new OutboundAtomicBundleController(
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
@@ -116,14 +117,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private boolean isMultichannelEnabled;
-    private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
 
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
         outboundGameplayGate.close(ctx, cause);
-        atomicBundleAssembler.abort(cause);
-        failPendingControlWrites(ctx, cause);
+        outboundBundleController.abort(ctx, cause);
         inboundEpochGate.close(ctx);
         domainFrameScheduler.fail(ctx, cause);
         capabilityNegotiator.clear(ctx.channel());
@@ -143,9 +142,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return;
         }
 
-        if (atomicBundleAssembler.isOpen()
+        if (outboundBundleController.isOpen()
                 && (msg == SIGNAL_START_MULTICHANNEL || msg == SynchronizationLayer.SYNC_REQUEST_OBJECT)) {
-            queuePendingControlWrite(ctx, msg, promise);
+            final CorruptedFrameException overflow =
+                    outboundBundleController.holdControl(ctx, msg, promise);
+            if (overflow != null) {
+                failAllCausalWrites(ctx, overflow);
+                ctx.fireExceptionCaught(overflow);
+                ctx.close();
+            }
             return;
         }
 
@@ -231,13 +236,16 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private void writeGamePacket(ChannelHandlerContext ctx, ByteBuf buf, ChannelPromise promise) {
+        boolean bundlePath = false;
         try {
             final OverrideResult decision = getOverrideResult(buf, !isMultichannelEnabled);
             if (isAtomicBundleEnabled()
-                    && (atomicBundleAssembler.isOpen() || decision.isBundleDelimiter())) {
-                final AtomicBundleAssembler.CompletedBundle completedBundle =
-                        atomicBundleAssembler.accept(
-                                ctx.alloc(),
+                    && (outboundBundleController.isOpen()
+                    || decision.isBundleDelimiter())) {
+                bundlePath = true;
+                final OutboundAtomicBundleController.CompletedBundle completedBundle =
+                        outboundBundleController.accept(
+                                ctx,
                                 buf,
                                 promise,
                                 decision.isBundleDelimiter(),
@@ -257,11 +265,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 promise.trySuccess();
             }
         } catch (Throwable throwable) {
-            if (atomicBundleAssembler.isOpen()) {
-                atomicBundleAssembler.abort(throwable);
-            }
+            final boolean abortConnection =
+                    bundlePath || outboundBundleController.isOpen();
+            outboundBundleController.abort(ctx, throwable);
             promise.tryFailure(throwable);
             ctx.fireExceptionCaught(throwable);
+            if (abortConnection) {
+                outboundGameplayGate.close(ctx, throwable);
+                ctx.close();
+            }
         } finally {
             buf.release();
         }
@@ -310,7 +322,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private void writeAtomicBundle(
             ChannelHandlerContext ctx,
-            AtomicBundleAssembler.CompletedBundle completedBundle
+            OutboundAtomicBundleController.CompletedBundle completedBundle
     ) {
         final ByteBuf envelope = completedBundle.payload();
         final List<ChannelPromise> promises = completedBundle.promises();
@@ -321,14 +333,31 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
             final ChannelPromise envelopePromise = ctx.newPromise();
             envelopePromise.addListener(future -> {
-                for (ChannelPromise promise : promises) {
-                    if (future.isSuccess()) {
+                if (future.isSuccess()) {
+                    for (ChannelPromise promise : promises) {
                         promise.trySuccess();
-                    } else if (future.isCancelled()) {
+                    }
+                    replayPendingBundleControls(ctx);
+                    return;
+                }
+
+                for (ChannelPromise promise : promises) {
+                    if (future.isCancelled()) {
                         promise.cancel(false);
                     } else {
                         promise.tryFailure(future.cause());
                     }
+                }
+                if (!future.isSuccess()) {
+                    final Throwable failure = future.isCancelled()
+                            ? new CancellationException(
+                                    "Atomic bundle envelope write was cancelled"
+                            )
+                            : future.cause();
+                    outboundBundleController.abort(ctx, failure);
+                    outboundGameplayGate.close(ctx, failure);
+                    ctx.fireExceptionCaught(failure);
+                    ctx.close();
                 }
             });
             final SimpleMetricsLogger metrics = metrics(ctx);
@@ -346,109 +375,35 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             for (ChannelPromise promise : promises) {
                 promise.tryFailure(throwable);
             }
+            outboundBundleController.abort(ctx, throwable);
+            outboundGameplayGate.close(ctx, throwable);
             ctx.fireExceptionCaught(throwable);
+            ctx.close();
         } finally {
             ReferenceCountUtil.safeRelease(envelope);
             ReferenceCountUtil.safeRelease(frameData);
         }
-
-        flushPendingControlWrites(ctx);
-    }
-
-    private void flushPendingControlWrites(ChannelHandlerContext ctx) {
-        BoundedPendingWriteQueue.PendingWrite pendingControlWrite;
-        while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
-            recordPendingWriteQueueState(
-                    ctx,
-                    pendingControlWrites,
-                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
-            );
-            try {
-                write(
-                        ctx,
-                        pendingControlWrite.message(),
-                        pendingControlWrite.promise()
-                );
-            } catch (Throwable throwable) {
-                pendingControlWrite.promise().tryFailure(throwable);
-                ReferenceCountUtil.safeRelease(pendingControlWrite.message());
-                failAllCausalWrites(ctx, throwable);
-                ctx.fireExceptionCaught(throwable);
-                ctx.close();
-                return;
-            }
-        }
-    }
-
-    private void failPendingControlWrites(
-            ChannelHandlerContext ctx,
-            Throwable cause
-    ) {
-        pendingControlWrites.failAll(cause);
-        recordPendingWriteQueueState(
-                ctx,
-                pendingControlWrites,
-                SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
-        );
-    }
-
-    private void queuePendingControlWrite(
-            ChannelHandlerContext ctx,
-            Object message,
-            ChannelPromise promise
-    ) {
-        if (!pendingControlWrites.tryAdd(message, promise)) {
-            failPendingQueueOverflow(
-                    ctx,
-                    pendingControlWrites,
-                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
-                    "bundle control",
-                    message,
-                    promise
-            );
-            return;
-        }
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundFrameQueued(
-                    SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
-                    pendingControlWrites.size(),
-                    pendingControlWrites.bytes()
-            );
-        }
-    }
-
-    private void failPendingQueueOverflow(
-            ChannelHandlerContext ctx,
-            BoundedPendingWriteQueue queue,
-            SimpleMetricsLogger.CausalOutboundQueue queueType,
-            String description,
-            Object message,
-            ChannelPromise promise
-    ) {
-        final CorruptedFrameException exception = new CorruptedFrameException(
-                "Pending causal " + description + " queue exceeded its bound "
-                        + "(frames=" + queue.size()
-                        + ", bytes=" + queue.bytes() + ")"
-        );
-        promise.tryFailure(exception);
-        ReferenceCountUtil.safeRelease(message);
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundQueueOverflow(queueType);
-        }
-        failAllCausalWrites(ctx, exception);
-        ctx.fireExceptionCaught(exception);
-        ctx.close();
     }
 
     private void failAllCausalWrites(
             ChannelHandlerContext ctx,
             Throwable cause
     ) {
-        atomicBundleAssembler.abort(cause);
-        failPendingControlWrites(ctx, cause);
+        outboundBundleController.abort(ctx, cause);
         outboundGameplayGate.close(ctx, cause);
+    }
+
+    private void replayPendingBundleControls(ChannelHandlerContext ctx) {
+        final Throwable replayFailure =
+                outboundBundleController.replayControls(
+                        ctx,
+                        (message, promise) -> write(ctx, message, promise)
+                );
+        if (replayFailure != null) {
+            failAllCausalWrites(ctx, replayFailure);
+            ctx.fireExceptionCaught(replayFailure);
+            ctx.close();
+        }
     }
 
     private void replayPendingGameplayWrites(ChannelHandlerContext ctx) {
@@ -461,21 +416,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             failAllCausalWrites(ctx, replayFailure);
             ctx.fireExceptionCaught(replayFailure);
             ctx.close();
-        }
-    }
-
-    private void recordPendingWriteQueueState(
-            ChannelHandlerContext ctx,
-            BoundedPendingWriteQueue queue,
-            SimpleMetricsLogger.CausalOutboundQueue queueType
-    ) {
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundQueueState(
-                    queueType,
-                    queue.size(),
-                    queue.bytes()
-            );
         }
     }
 
@@ -660,7 +600,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             // A restart signal is a barrier for the new epoch. Process it
             // before releasing application packets so those packets cannot be
             // encoded on the pre-start/default order channel.
-            flushPendingControlWrites(ctx);
+            replayPendingBundleControls(ctx);
             if (!outboundGameplayGate.isHolding()) {
                 replayPendingGameplayWrites(ctx);
             }

@@ -223,6 +223,46 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
+    void bundleControlWaitsForEnvelopeWriteAcceptance() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter()
+        );
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        final ChannelPromise openingPromise = channel.newPromise();
+        final ChannelPromise controlPromise = channel.newPromise();
+        final ChannelPromise closingPromise = channel.newPromise();
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                openingPromise
+        );
+        channel.pipeline().write(
+                RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL,
+                controlPromise
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                closingPromise
+        );
+
+        assertFalse(openingPromise.isDone());
+        assertFalse(controlPromise.isDone());
+        assertFalse(closingPromise.isDone());
+        channel.runPendingTasks();
+
+        assertTrue(openingPromise.isSuccess());
+        assertTrue(controlPromise.isSuccess());
+        assertTrue(closingPromise.isSuccess());
+        final FrameData envelope = channel.readOutbound();
+        assertEquals(0xfd, envelope.getPacketId());
+        envelope.release();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
     void futureEpochWaitsForItsFenceEvent() {
         final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
         codec.addHandler((buf, suppressWarning) ->
