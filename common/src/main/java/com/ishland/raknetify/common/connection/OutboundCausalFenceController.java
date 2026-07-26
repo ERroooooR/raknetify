@@ -174,9 +174,13 @@ final class OutboundCausalFenceController {
             Fence fence,
             Throwable cause
     ) {
+        final Throwable failure = CausalFutureUtil.nonNullCause(
+                cause,
+                "Causal fence marker write"
+        );
         if (!ctx.channel().eventLoop().inEventLoop()) {
             ctx.channel().eventLoop().execute(() ->
-                    fail(ctx, fence, cause)
+                    fail(ctx, fence, failure)
             );
             return;
         }
@@ -190,9 +194,9 @@ final class OutboundCausalFenceController {
         if (metrics != null) {
             metrics.causalFenceFailed();
         }
-        failActivePromises(cause);
-        failQueuedWrites(ctx, cause);
-        ctx.fireExceptionCaught(cause);
+        failActivePromises(failure);
+        failQueuedWrites(ctx, failure);
+        ctx.fireExceptionCaught(failure);
         ctx.close();
     }
 

@@ -65,7 +65,14 @@ public final class CausalTransportProtocol {
     public static final AttributeKey<Long> OUTBOUND_CAPABILITIES =
             AttributeKey.valueOf("raknetify:causal-outbound-capabilities");
 
-    public static final int MAX_ATOMIC_BUNDLE_PACKETS = 4096;
+    /**
+     * Vanilla permits 4096 packets inside a bundle. PacketUnbundler adds the
+     * opening and closing delimiter on the wire, so a maximum-size legal
+     * bundle contains 4098 encoded packets.
+     */
+    public static final int MAX_ATOMIC_BUNDLE_CONTENT_PACKETS = 4096;
+    public static final int MAX_ATOMIC_BUNDLE_PACKETS =
+            MAX_ATOMIC_BUNDLE_CONTENT_PACKETS + 2;
     public static final int MAX_ATOMIC_BUNDLE_BYTES = 64 * 1024 * 1024;
     public static final int MAX_PENDING_CAUSAL_WRITES = 16 * 1024;
 

@@ -72,7 +72,11 @@ public final class PreGatedTransitionScope {
         if (channel.eventLoop().inEventLoop()) {
             request.run();
         } else {
-            channel.eventLoop().execute(request);
+            try {
+                channel.eventLoop().execute(request);
+            } catch (Throwable throwable) {
+                failClosed(channel, throwable);
+            }
         }
     }
 
@@ -136,10 +140,17 @@ public final class PreGatedTransitionScope {
         if (future.isSuccess()) {
             return;
         }
+        failClosed(
+                channel,
+                CausalFutureUtil.failureCause(
+                        future,
+                        "Pre-gated transition fence write"
+                )
+        );
+    }
+
+    private static void failClosed(Channel channel, Throwable cause) {
         clear(channel);
-        final Throwable cause = future.cause() != null
-                ? future.cause()
-                : new IllegalStateException("Pre-gated transition fence was cancelled");
         channel.pipeline().fireExceptionCaught(cause);
         channel.close();
     }

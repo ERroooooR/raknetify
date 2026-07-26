@@ -34,18 +34,19 @@ import network.ycc.raknet.RakNet;
 import java.util.List;
 
 /**
- * Owns an outbound atomic bundle and control writes that must not overtake it.
+ * Owns an outbound atomic bundle, transition controls that wait for its
+ * envelope, and every later write that must remain behind those controls.
  */
 final class OutboundAtomicBundleController {
 
     private final AtomicBundleAssembler assembler = new AtomicBundleAssembler();
-    private final BoundedPendingWriteQueue pendingControlWrites;
+    private final BoundedPendingWriteQueue pendingBarrierWrites;
 
     OutboundAtomicBundleController(
             int maxPendingControlWrites,
             long maxPendingControlBytes
     ) {
-        this.pendingControlWrites = new BoundedPendingWriteQueue(
+        this.pendingBarrierWrites = new BoundedPendingWriteQueue(
                 maxPendingControlWrites,
                 maxPendingControlBytes
         );
@@ -53,6 +54,10 @@ final class OutboundAtomicBundleController {
 
     boolean isOpen() {
         return assembler.isOpen();
+    }
+
+    boolean hasPendingWrites() {
+        return pendingBarrierWrites.size() != 0;
     }
 
     CompletedBundle accept(
@@ -86,32 +91,32 @@ final class OutboundAtomicBundleController {
         );
     }
 
-    CorruptedFrameException holdControl(
+    CorruptedFrameException holdBehindBundleBarrier(
             ChannelHandlerContext ctx,
             Object message,
             ChannelPromise promise
     ) {
-        if (!assembler.isOpen()) {
+        if (!assembler.isOpen() && pendingBarrierWrites.size() == 0) {
             throw new IllegalStateException(
-                    "Cannot retain bundle control while no bundle is open"
+                    "Cannot retain a write without an open or pending bundle barrier"
             );
         }
-        if (pendingControlWrites.tryAdd(message, promise)) {
+        if (pendingBarrierWrites.tryAdd(message, promise)) {
             final SimpleMetricsLogger metrics = metrics(ctx);
             if (metrics != null) {
                 metrics.causalOutboundFrameQueued(
                         SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
-                        pendingControlWrites.size(),
-                        pendingControlWrites.bytes()
+                        pendingBarrierWrites.size(),
+                        pendingBarrierWrites.bytes()
                 );
             }
             return null;
         }
 
         final CorruptedFrameException exception = new CorruptedFrameException(
-                "Pending causal bundle control queue exceeded its bound "
-                        + "(frames=" + pendingControlWrites.size()
-                        + ", bytes=" + pendingControlWrites.bytes() + ")"
+                "Pending causal bundle barrier queue exceeded its bound "
+                        + "(frames=" + pendingBarrierWrites.size()
+                        + ", bytes=" + pendingBarrierWrites.bytes() + ")"
         );
         promise.tryFailure(exception);
         ReferenceCountUtil.safeRelease(message);
@@ -125,22 +130,22 @@ final class OutboundAtomicBundleController {
         return exception;
     }
 
-    Throwable replayControls(
+    Throwable replayBarrierWrites(
             ChannelHandlerContext ctx,
-            ControlReplayer replayer
+            WriteReplayer replayer
     ) {
-        BoundedPendingWriteQueue.PendingWrite pendingControlWrite;
-        while ((pendingControlWrite = pendingControlWrites.poll()) != null) {
-            recordControlQueueState(ctx);
+        BoundedPendingWriteQueue.PendingWrite pendingWrite;
+        while ((pendingWrite = pendingBarrierWrites.poll()) != null) {
+            recordBarrierQueueState(ctx);
             try {
                 replayer.replay(
-                        pendingControlWrite.message(),
-                        pendingControlWrite.promise()
+                        pendingWrite.message(),
+                        pendingWrite.promise()
                 );
             } catch (Throwable throwable) {
-                pendingControlWrite.promise().tryFailure(throwable);
+                pendingWrite.promise().tryFailure(throwable);
                 ReferenceCountUtil.safeRelease(
-                        pendingControlWrite.message()
+                        pendingWrite.message()
                 );
                 abort(ctx, throwable);
                 return throwable;
@@ -151,25 +156,25 @@ final class OutboundAtomicBundleController {
 
     void abort(ChannelHandlerContext ctx, Throwable cause) {
         assembler.abort(cause);
-        pendingControlWrites.failAll(cause);
-        recordControlQueueState(ctx);
+        pendingBarrierWrites.failAll(cause);
+        recordBarrierQueueState(ctx);
     }
 
-    int pendingControlCount() {
-        return pendingControlWrites.size();
+    int pendingBarrierWriteCount() {
+        return pendingBarrierWrites.size();
     }
 
-    long pendingControlBytes() {
-        return pendingControlWrites.bytes();
+    long pendingBarrierBytes() {
+        return pendingBarrierWrites.bytes();
     }
 
-    private void recordControlQueueState(ChannelHandlerContext ctx) {
+    private void recordBarrierQueueState(ChannelHandlerContext ctx) {
         final SimpleMetricsLogger metrics = metrics(ctx);
         if (metrics != null) {
             metrics.causalOutboundQueueState(
                     SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL,
-                    pendingControlWrites.size(),
-                    pendingControlWrites.bytes()
+                    pendingBarrierWrites.size(),
+                    pendingBarrierWrites.bytes()
             );
         }
     }
@@ -189,7 +194,7 @@ final class OutboundAtomicBundleController {
     }
 
     @FunctionalInterface
-    interface ControlReplayer {
+    interface WriteReplayer {
 
         void replay(Object message, ChannelPromise promise) throws Exception;
     }

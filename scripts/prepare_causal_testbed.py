@@ -113,10 +113,13 @@ def validate_paths(
     output: Path,
     *,
     replace: bool,
+    protected_paths: tuple[Path, ...] = (),
 ) -> tuple[Path, Path, Path]:
     template = server_template.resolve()
     raknetify = raknetify_jar.resolve()
     destination = output.resolve()
+    if destination.parent == destination:
+        raise TestbedError("output cannot be a filesystem root")
     if not template.is_dir():
         raise TestbedError(f"server template does not exist: {template}")
     if not raknetify.is_file():
@@ -129,6 +132,16 @@ def validate_paths(
         raise TestbedError(
             "output cannot be the template, its ancestor, or its descendant"
         )
+    for protected_path in (raknetify, *protected_paths):
+        protected = protected_path.resolve()
+        if protected == destination or _is_relative_to(protected, destination):
+            raise TestbedError(
+                f"output cannot contain an input artifact or directory: {protected}"
+            )
+        if protected.is_dir() and _is_relative_to(destination, protected):
+            raise TestbedError(
+                f"output cannot be inside an input directory: {protected}"
+            )
     if destination.exists():
         sentinel = destination / SENTINEL_NAME
         if not replace:
@@ -357,10 +370,15 @@ def prepare_testbed(
     replace: bool = False,
 ) -> dict[str, Any]:
     roots = tuple(roots)
+    client_mods_path = client_mods.resolve()
     template, raknetify_path, destination = validate_paths(
-        server_template, raknetify_jar, output, replace=replace
+        server_template,
+        raknetify_jar,
+        output,
+        replace=replace,
+        protected_paths=(client_mods_path,),
     )
-    scanned = scan_mod_directory(client_mods.resolve())
+    scanned = scan_mod_directory(client_mods_path)
     selected = resolve_server_mods(scanned, roots)
     raknetify = inspect_jar(raknetify_path)
     if "raknetify" not in raknetify.mod_ids:
@@ -377,7 +395,7 @@ def prepare_testbed(
     mods = copy_mods(selected, raknetify, destination)
     manifest = {
         "format": 1,
-        "client_mods": str(client_mods.resolve()),
+        "client_mods": str(client_mods_path),
         "jvm_arguments": jvm_arguments,
         "causal_harness": harness,
         "mods": mods,

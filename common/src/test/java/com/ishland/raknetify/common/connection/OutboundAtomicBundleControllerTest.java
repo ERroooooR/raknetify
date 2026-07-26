@@ -66,12 +66,12 @@ class OutboundAtomicBundleControllerTest {
         final ByteBuf secondControl = Unpooled.buffer(1).writeByte(11);
         final ChannelPromise firstControlPromise = channel.newPromise();
         final ChannelPromise secondControlPromise = channel.newPromise();
-        assertNull(controller.holdControl(
+        assertNull(controller.holdBehindBundleBarrier(
                 capture.context,
                 firstControl,
                 firstControlPromise
         ));
-        assertNull(controller.holdControl(
+        assertNull(controller.holdBehindBundleBarrier(
                 capture.context,
                 secondControl,
                 secondControlPromise
@@ -101,7 +101,7 @@ class OutboundAtomicBundleControllerTest {
         completed.payload().release();
         completed.promises().forEach(ChannelPromise::trySuccess);
 
-        assertNull(controller.replayControls(
+        assertNull(controller.replayBarrierWrites(
                 capture.context,
                 capture.context::write
         ));
@@ -112,7 +112,7 @@ class OutboundAtomicBundleControllerTest {
         assertSame(secondControl, channel.readOutbound());
         firstControl.release();
         secondControl.release();
-        assertEquals(0, controller.pendingControlCount());
+        assertEquals(0, controller.pendingBarrierWriteCount());
         assertFalse(channel.finishAndReleaseAll());
     }
 
@@ -130,11 +130,19 @@ class OutboundAtomicBundleControllerTest {
         final ChannelPromise firstPromise = channel.newPromise();
         final ChannelPromise secondPromise = channel.newPromise();
         final ChannelPromise overflowPromise = channel.newPromise();
-        controller.holdControl(capture.context, first, firstPromise);
-        controller.holdControl(capture.context, second, secondPromise);
+        controller.holdBehindBundleBarrier(
+                capture.context,
+                first,
+                firstPromise
+        );
+        controller.holdBehindBundleBarrier(
+                capture.context,
+                second,
+                secondPromise
+        );
 
         final CorruptedFrameException exception =
-                controller.holdControl(
+                controller.holdBehindBundleBarrier(
                         capture.context,
                         overflow,
                         overflowPromise
@@ -147,7 +155,7 @@ class OutboundAtomicBundleControllerTest {
         assertTrue(openingPromise.isDone());
         assertFalse(openingPromise.isSuccess());
         assertFalse(controller.isOpen());
-        assertEquals(0, controller.pendingControlCount());
+        assertEquals(0, controller.pendingBarrierWriteCount());
         assertFalse(channel.finishAndReleaseAll());
     }
 
@@ -161,7 +169,7 @@ class OutboundAtomicBundleControllerTest {
         accept(controller, capture.context, openingPromise, true, 0);
         final ByteBuf control = Unpooled.buffer(1).writeByte(1);
         final ChannelPromise controlPromise = channel.newPromise();
-        controller.holdControl(
+        controller.holdBehindBundleBarrier(
                 capture.context,
                 control,
                 controlPromise
@@ -186,7 +194,7 @@ class OutboundAtomicBundleControllerTest {
         assertFalse(openingPromise.isSuccess());
         assertFailedAndReleased(controlPromise, control);
         assertFalse(controller.isOpen());
-        assertEquals(0, controller.pendingControlCount());
+        assertEquals(0, controller.pendingBarrierWriteCount());
         assertFalse(rejectedPromise.isDone());
         assertFalse(channel.finishAndReleaseAll());
     }
@@ -204,8 +212,16 @@ class OutboundAtomicBundleControllerTest {
         final ByteBuf second = Unpooled.buffer(1).writeByte(2);
         final ChannelPromise firstPromise = channel.newPromise();
         final ChannelPromise secondPromise = channel.newPromise();
-        controller.holdControl(capture.context, first, firstPromise);
-        controller.holdControl(capture.context, second, secondPromise);
+        controller.holdBehindBundleBarrier(
+                capture.context,
+                first,
+                firstPromise
+        );
+        controller.holdBehindBundleBarrier(
+                capture.context,
+                second,
+                secondPromise
+        );
         final OutboundAtomicBundleController.CompletedBundle completed =
                 accept(
                         controller,
@@ -219,7 +235,7 @@ class OutboundAtomicBundleControllerTest {
         completed.promises().forEach(ChannelPromise::trySuccess);
         final IOException failure = new IOException("control replay failed");
 
-        assertSame(failure, controller.replayControls(
+        assertSame(failure, controller.replayBarrierWrites(
                 capture.context,
                 (message, promise) -> {
                     throw failure;
@@ -228,7 +244,7 @@ class OutboundAtomicBundleControllerTest {
 
         assertFailedAndReleased(firstPromise, first);
         assertFailedAndReleased(secondPromise, second);
-        assertEquals(0, controller.pendingControlCount());
+        assertEquals(0, controller.pendingBarrierWriteCount());
         assertFalse(channel.finishAndReleaseAll());
     }
 
@@ -242,7 +258,11 @@ class OutboundAtomicBundleControllerTest {
         accept(controller, capture.context, openingPromise, true, 0);
         final ByteBuf control = Unpooled.buffer(1).writeByte(1);
         final ChannelPromise controlPromise = channel.newPromise();
-        controller.holdControl(capture.context, control, controlPromise);
+        controller.holdBehindBundleBarrier(
+                capture.context,
+                control,
+                controlPromise
+        );
         final IllegalStateException cause = new IllegalStateException("removed");
 
         controller.abort(capture.context, cause);
@@ -251,7 +271,7 @@ class OutboundAtomicBundleControllerTest {
         assertSame(cause, controlPromise.cause());
         assertEquals(0, control.refCnt());
         assertFalse(controller.isOpen());
-        assertEquals(0, controller.pendingControlCount());
+        assertEquals(0, controller.pendingBarrierWriteCount());
         assertFalse(channel.finishAndReleaseAll());
     }
 

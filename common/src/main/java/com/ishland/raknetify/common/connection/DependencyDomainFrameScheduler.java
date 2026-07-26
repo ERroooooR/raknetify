@@ -33,6 +33,8 @@ import io.netty.util.ReferenceCountUtil;
 import network.ycc.raknet.RakNet;
 import network.ycc.raknet.frame.FrameData;
 
+import java.util.Objects;
+
 /**
  * Connects the pure dependency-domain scheduling policy to Netty ownership.
  *
@@ -43,10 +45,27 @@ import network.ycc.raknet.frame.FrameData;
 final class DependencyDomainFrameScheduler {
 
     private final DependencyDomainScheduler<PendingFrame> scheduler;
+    private final DrainTaskSubmitter drainTaskSubmitter;
     private boolean drainScheduled;
 
     DependencyDomainFrameScheduler(int maxFrames, long maxBytes) {
+        this(
+                maxFrames,
+                maxBytes,
+                (ctx, task) -> ctx.executor().execute(task)
+        );
+    }
+
+    DependencyDomainFrameScheduler(
+            int maxFrames,
+            long maxBytes,
+            DrainTaskSubmitter drainTaskSubmitter
+    ) {
         this.scheduler = new DependencyDomainScheduler<>(maxFrames, maxBytes);
+        this.drainTaskSubmitter = Objects.requireNonNull(
+                drainTaskSubmitter,
+                "drainTaskSubmitter"
+        );
     }
 
     void schedule(
@@ -77,7 +96,13 @@ final class DependencyDomainFrameScheduler {
         }
 
         recordQueued(ctx, domain, bytes);
-        scheduleDrain(ctx);
+        try {
+            scheduleDrain(ctx);
+        } catch (Throwable throwable) {
+            fail(ctx, throwable);
+            ctx.fireExceptionCaught(throwable);
+            ctx.close();
+        }
     }
 
     void drain(ChannelHandlerContext ctx) {
@@ -122,13 +147,18 @@ final class DependencyDomainFrameScheduler {
             return;
         }
         drainScheduled = true;
-        ctx.executor().execute(() -> {
+        try {
+            drainTaskSubmitter.submit(ctx, () -> {
+                drainScheduled = false;
+                if (!scheduler.isEmpty()) {
+                    drain(ctx);
+                    ctx.flush();
+                }
+            });
+        } catch (Throwable throwable) {
             drainScheduled = false;
-            if (!scheduler.isEmpty()) {
-                drain(ctx);
-                ctx.flush();
-            }
-        });
+            throw throwable;
+        }
     }
 
     private static void recordQueued(
@@ -177,5 +207,11 @@ final class DependencyDomainFrameScheduler {
             ChannelPromise promise,
             int bytes
     ) {
+    }
+
+    @FunctionalInterface
+    interface DrainTaskSubmitter {
+
+        void submit(ChannelHandlerContext ctx, Runnable task);
     }
 }

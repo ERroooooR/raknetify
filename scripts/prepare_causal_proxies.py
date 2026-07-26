@@ -73,8 +73,28 @@ def checked_port(port: int, label: str) -> int:
     return port
 
 
-def prepare_destination(output: Path, replace: bool) -> Path:
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def prepare_destination(
+    output: Path,
+    replace: bool,
+    protected_paths: tuple[Path, ...] = (),
+) -> Path:
     destination = output.resolve()
+    if destination.parent == destination:
+        raise ProxyTestbedError("output cannot be a filesystem root")
+    for protected_path in protected_paths:
+        protected = protected_path.resolve()
+        if protected == destination or _is_relative_to(protected, destination):
+            raise ProxyTestbedError(
+                f"output cannot contain an input artifact: {protected}"
+            )
     if destination.exists():
         if not replace:
             raise ProxyTestbedError(
@@ -283,7 +303,11 @@ def prepare_proxies(
         [f"{name}={address}" for name, address in backends.items()]
     )
 
-    destination = prepare_destination(output, replace)
+    destination = prepare_destination(
+        output,
+        replace,
+        tuple(artifacts.values()),
+    )
     velocity = destination / "velocity"
     bungee = destination / "bungee"
     (velocity / "plugins").mkdir(parents=True)

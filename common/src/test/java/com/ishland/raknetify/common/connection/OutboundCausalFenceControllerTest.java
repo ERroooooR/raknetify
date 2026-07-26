@@ -34,6 +34,7 @@ import io.netty.handler.codec.CorruptedFrameException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -275,6 +276,31 @@ class OutboundCausalFenceControllerTest {
         assertFailedAndReleased(firstPromise, first);
         assertFailedAndReleased(secondPromise, second);
         assertEquals(0, controller.queuedWriteCount());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void cancelledMarkerUsesANonNullFailureAndReleasesOwnedWrites() {
+        final ContextCapture capture = new ContextCapture();
+        final EmbeddedChannel channel = new EmbeddedChannel(capture);
+        final OutboundCausalFenceController controller =
+                new OutboundCausalFenceController(4, 1024);
+        final ChannelPromise fencePromise = channel.newPromise();
+        final OutboundCausalFenceController.Fence fence =
+                controller.begin(capture.context, fencePromise);
+        final ByteBuf write = Unpooled.buffer(1).writeByte(1);
+        final ChannelPromise writePromise = channel.newPromise();
+        controller.hold(capture.context, write, writePromise);
+
+        controller.fail(capture.context, fence, null);
+
+        assertTrue(fencePromise.cause() instanceof CancellationException);
+        assertTrue(writePromise.cause() instanceof CancellationException);
+        assertEquals(0, write.refCnt());
+        assertFalse(controller.waitingForAck());
+        assertEquals(0, controller.queuedWriteCount());
+        assertFalse(channel.isOpen());
+        assertThrows(CancellationException.class, channel::checkException);
         assertFalse(channel.finishAndReleaseAll());
     }
 

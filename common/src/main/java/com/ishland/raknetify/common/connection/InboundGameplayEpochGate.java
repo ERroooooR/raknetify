@@ -101,6 +101,7 @@ final class InboundGameplayEpochGate {
         if (pendingFrames.size() >= maxPendingFrames
                 || bytes > maxPendingBytes - pendingBytes) {
             payload.release();
+            clearPending(ctx);
             throw new CorruptedFrameException(
                     "Pending gameplay epoch queue exceeded its bound"
             );
@@ -139,6 +140,10 @@ final class InboundGameplayEpochGate {
     }
 
     void close(ChannelHandlerContext ctx) {
+        clearPending(ctx);
+    }
+
+    private void clearPending(ChannelHandlerContext ctx) {
         PendingFrame pending;
         while ((pending = pendingFrames.pollFirst()) != null) {
             pending.payload.release();

@@ -34,6 +34,8 @@ import io.netty.handler.codec.CorruptedFrameException;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.RejectedExecutionException;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -211,6 +213,39 @@ class DependencyDomainFrameSchedulerTest {
         assertEquals(0, second.refCnt());
         assertEquals(0, scheduler.size());
         channel.runPendingTasks();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void rejectedDrainTaskFailsAndReleasesTransferredFrameOwnership() {
+        final ContextCapture capture = new ContextCapture();
+        final EmbeddedChannel channel = new EmbeddedChannel(capture);
+        final RejectedExecutionException failure =
+                new RejectedExecutionException("event loop stopped");
+        final DependencyDomainFrameScheduler scheduler =
+                new DependencyDomainFrameScheduler(
+                        16,
+                        1024,
+                        (ctx, task) -> {
+                            throw failure;
+                        }
+                );
+        final FrameData frame = frame(channel, 1);
+        final ChannelPromise promise = channel.newPromise();
+
+        scheduler.schedule(
+                capture.context,
+                DependencyDomain.STRICT_WORLD,
+                frame,
+                promise
+        );
+
+        assertSame(failure, promise.cause());
+        assertEquals(0, frame.refCnt());
+        assertEquals(0, scheduler.size());
+        assertEquals(0, scheduler.bytes());
+        assertFalse(channel.isOpen());
+        assertThrows(RejectedExecutionException.class, channel::checkException);
         assertFalse(channel.finishAndReleaseAll());
     }
 

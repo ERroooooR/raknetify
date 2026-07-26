@@ -222,11 +222,10 @@ final class CausalCapabilityNegotiator {
             frameData.setOrderChannel(7);
             ctx.writeAndFlush(frameData).addListener(future -> {
                 if (!future.isSuccess()) {
-                    final Throwable cause = future.cause() != null
-                            ? future.cause()
-                            : new IllegalStateException(
-                                    "Causal capability acknowledgement was cancelled"
-                            );
+                    final Throwable cause = CausalFutureUtil.failureCause(
+                            future,
+                            "Causal capability acknowledgement write"
+                    );
                     ctx.fireExceptionCaught(cause);
                     ctx.close();
                 }
@@ -249,6 +248,7 @@ final class CausalCapabilityNegotiator {
     private static void requireControlChannel(FrameData packet) {
         if (!packet.getReliability().isReliable
                 || !packet.getReliability().isOrdered
+                || packet.getReliability().isSequenced
                 || packet.getOrderChannel() != 7) {
             throw new CorruptedFrameException(
                     "Causal control frame was not delivered on reliable ordered channel 7"

@@ -46,7 +46,8 @@ complex entity spawning, Touhou Little Maid entity payloads and other unknown mo
   Advertisement and acknowledgement use reliable ordered channel 7. Merely accepting the local
   advertisement write is insufficient because causal gameplay on channel 1 or 4 could otherwise
   reach the peer before that channel-7 advertisement.
-- Bound envelopes to 4096 packets and 64 MiB, validate matching delimiters and trailing data, and
+- Bound envelopes to Vanilla's 4096 content packets plus two wire delimiters (4098 encoded
+  packets) and 64 MiB, validate matching delimiters and trailing data, and
   complete every original packet promise from the single envelope write result.
 
 An envelope is required before unrelated channels can be reopened: sending delimiters on one
@@ -134,7 +135,9 @@ references through replay, overflow and channel removal.
 
 Atomic bundle assembly and the control signals blocked by an open bundle share one outbound
 controller. A completed bundle transfers its envelope and original packet promises together; only
-after the envelope's outbound promise succeeds may retained restart/fence signals replay.
+after the envelope's outbound promise succeeds may retained restart/fence signals replay. Once a
+control signal is retained, every write following the closing delimiter remains behind that signal
+as well; post-bundle gameplay therefore cannot overtake a fence that is waiting for the envelope.
 Assembly failure, envelope write failure/cancellation, control overflow, replay failure and channel
 removal fail both sides of the boundary together. A failed bundle can therefore no longer leave old
 control signals stranded while newer transition signals pass them.

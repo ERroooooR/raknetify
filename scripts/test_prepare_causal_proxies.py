@@ -91,6 +91,31 @@ class PrepareCausalProxiesTest(unittest.TestCase):
                     replace=True,
                 )
 
+    def test_refuses_to_replace_an_ancestor_of_input_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact.jar"
+            artifact.write_bytes(b"artifact")
+            (root / ".causal-proxies.json").write_text("{}\n")
+
+            with self.assertRaisesRegex(
+                ProxyTestbedError,
+                "output cannot contain an input artifact",
+            ):
+                prepare_proxies(
+                    artifact,
+                    artifact,
+                    artifact,
+                    artifact,
+                    root,
+                    {"causal": "127.0.0.1:25576"},
+                    25577,
+                    25578,
+                    replace=True,
+                )
+
+            self.assertEqual(b"artifact", artifact.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

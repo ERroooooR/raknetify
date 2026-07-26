@@ -101,10 +101,18 @@ public class RakNetFabricConnectionUtil {
             return;
         }
 //        System.out.println("Reordering");
-        ChannelHandler handler = pipeline.remove(RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE);
-        if (handler != null) {
-            pipeline.addAfter("encoder", RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE, handler);
+        final ChannelHandler handler = pipeline.get(
+                RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE
+        );
+        if (handler == null) {
+            return;
         }
+        pipeline.remove(handler);
+        pipeline.addAfter(
+                "encoder",
+                RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE,
+                handler
+        );
     }
 
     public static DatagramChannel fromSocketChannel(Class<? extends SocketChannel> clazz) {

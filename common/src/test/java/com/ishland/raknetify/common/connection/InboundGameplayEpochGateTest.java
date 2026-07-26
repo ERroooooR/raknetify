@@ -75,10 +75,10 @@ class InboundGameplayEpochGateTest {
                 () -> channel.writeInbound(overflow)
         );
         assertEquals(0, overflow.refCnt());
-
-        assertFalse(channel.finishAndReleaseAll());
         assertEquals(0, first.refCnt());
         assertEquals(0, second.refCnt());
+
+        assertFalse(channel.finishAndReleaseAll());
     }
 
     @Test
@@ -98,10 +98,10 @@ class InboundGameplayEpochGateTest {
                 () -> channel.writeInbound(overflow)
         );
         assertEquals(0, overflow.refCnt());
-
-        assertFalse(channel.finishAndReleaseAll());
         assertEquals(0, first.refCnt());
         assertEquals(0, second.refCnt());
+
+        assertFalse(channel.finishAndReleaseAll());
     }
 
     private static EmbeddedChannel channel(InboundGameplayEpochGate gate) {

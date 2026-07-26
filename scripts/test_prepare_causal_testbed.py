@@ -121,6 +121,30 @@ class PrepareCausalTestbedTest(unittest.TestCase):
                     replace=False,
                 )
 
+    def test_output_cannot_contain_the_raknetify_artifact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "template"
+            output = root / "testbed"
+            template.mkdir()
+            output.mkdir()
+            raknetify = output / "raknetify.jar"
+            raknetify.write_bytes(b"jar")
+            (output / ".causal-testbed.json").write_text("{}\n")
+
+            with self.assertRaisesRegex(
+                TestbedError,
+                "output cannot contain an input artifact",
+            ):
+                validate_paths(
+                    template,
+                    raknetify,
+                    output,
+                    replace=True,
+                )
+
+            self.assertEqual(b"jar", raknetify.read_bytes())
+
     def test_prepares_isolated_server_and_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

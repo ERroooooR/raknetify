@@ -164,7 +164,10 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
                     outboundFenceController.fail(
                             ctx,
                             fence,
-                            future.cause()
+                            CausalFutureUtil.failureCause(
+                                    future,
+                                    "Causal fence marker write"
+                            )
                     );
                 }
             });
@@ -240,7 +243,12 @@ public class SynchronizationLayer extends ChannelDuplexHandler {
             frameData = null;
             writeFuture.addListener(future -> {
                 if (!future.isSuccess()) {
-                    ctx.fireExceptionCaught(future.cause());
+                    final Throwable cause = CausalFutureUtil.failureCause(
+                            future,
+                            "Causal fence acknowledgement write"
+                    );
+                    ctx.fireExceptionCaught(cause);
+                    ctx.close();
                 }
             });
         } finally {

@@ -27,17 +27,23 @@ package com.ishland.raknetify.common.connection;
 import com.ishland.raknetify.common.Constants;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.CorruptedFrameException;
 import io.netty.util.ReferenceCountUtil;
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import network.ycc.raknet.frame.FrameData;
+import network.ycc.raknet.packet.FramedPacket;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CancellationException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -263,6 +269,62 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
+    void postBundleGameplayCannotOvertakeAControlWaitingForTheEnvelope() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                buf.getUnsignedByte(buf.readerIndex()) == 0
+                        ? RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter()
+                        : RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+        final ChannelPromise openingPromise = channel.newPromise();
+        final ChannelPromise controlPromise = channel.newPromise();
+        final ChannelPromise closingPromise = channel.newPromise();
+        final ChannelPromise laterGameplayPromise = channel.newPromise();
+
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                openingPromise
+        );
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                controlPromise
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                closingPromise
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{1, 9}),
+                laterGameplayPromise
+        );
+        channel.runPendingTasks();
+        channel.flushOutbound();
+
+        final FrameData envelope = channel.readOutbound();
+        assertEquals(0xfd, envelope.getPacketId());
+        envelope.release();
+        assertSame(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                channel.readOutbound()
+        );
+        assertNull(channel.readOutbound());
+        assertFalse(laterGameplayPromise.isDone());
+
+        channel.pipeline().fireUserEventTriggered(
+                new SynchronizationLayer.OutboundEpochAdvanced(1)
+        );
+        channel.runPendingTasks();
+
+        assertTrue(laterGameplayPromise.isSuccess());
+        final FrameData laterGameplay = channel.readOutbound();
+        assertEquals(0xfd, laterGameplay.getPacketId());
+        laterGameplay.release();
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
     void futureEpochWaitsForItsFenceEvent() {
         final RakNetSimpleMultiChannelCodec codec = new RakNetSimpleMultiChannelCodec(0xfd);
         codec.addHandler((buf, suppressWarning) ->
@@ -478,6 +540,28 @@ class RakNetSimpleMultiChannelCodecTest {
     }
 
     @Test
+    void sequencedCapabilityControlIsRejected() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        final FrameData advertisement = capabilityFrame(
+                channel,
+                CausalTransportProtocol.LOCAL_CAPABILITIES
+        );
+        advertisement.setReliability(
+                FramedPacket.Reliability.RELIABLE_SEQUENCED
+        );
+
+        assertThrows(
+                CorruptedFrameException.class,
+                () -> channel.writeInbound(advertisement)
+        );
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
     void peerAdvertisementAloneCannotEnableCrossChannelCausalFrames() {
         final RakNetSimpleMultiChannelCodec codec =
                 new RakNetSimpleMultiChannelCodec(0xfd);
@@ -643,6 +727,98 @@ class RakNetSimpleMultiChannelCodecTest {
         assertFalse(channel.finishAndReleaseAll());
     }
 
+    @Test
+    void cancelledStartBarrierFailsItsSignalAndClosesTheConnection() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(
+                new CancelOutboundMessage(Constants.RAKNET_PING_PACKET_ID, null),
+                codec
+        );
+        final ChannelPromise startPromise = channel.newPromise();
+
+        channel.pipeline().write(
+                RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL,
+                startPromise
+        );
+
+        assertTrue(startPromise.isDone());
+        assertFalse(startPromise.isSuccess());
+        assertTrue(startPromise.cause() instanceof CancellationException);
+        assertFalse(channel.isOpen());
+        assertThrows(CancellationException.class, channel::checkException);
+        ReferenceCountUtil.safeRelease(channel.readOutbound());
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void cancelledFenceWriteClosesInsteadOfOpeningTheGameplayGate() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(
+                new CancelOutboundMessage(
+                        Integer.MIN_VALUE,
+                        SynchronizationLayer.SYNC_REQUEST_OBJECT
+                ),
+                codec
+        );
+        negotiateCausalCapabilities(channel);
+        final ChannelPromise fencePromise = channel.newPromise();
+
+        channel.pipeline().write(
+                SynchronizationLayer.SYNC_REQUEST_OBJECT,
+                fencePromise
+        );
+
+        assertTrue(fencePromise.isCancelled());
+        assertFalse(channel.isOpen());
+        assertThrows(CancellationException.class, channel::checkException);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void cancelledAtomicEnvelopeFailsEveryPacketAndCloses() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                buf.getUnsignedByte(buf.readerIndex()) == 0
+                        ? RakNetSimpleMultiChannelCodec.OverrideResult.bundleDelimiter()
+                        : RakNetSimpleMultiChannelCodec.OverrideResult.route(7));
+        final EmbeddedChannel channel = new EmbeddedChannel(
+                new CancelOutboundMessage(0xfd, null),
+                codec
+        );
+        negotiateCausalCapabilities(channel);
+        final ChannelPromise openingPromise = channel.newPromise();
+        final ChannelPromise contentPromise = channel.newPromise();
+        final ChannelPromise closingPromise = channel.newPromise();
+
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                openingPromise
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{1}),
+                contentPromise
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{0}),
+                closingPromise
+        );
+        channel.runPendingTasks();
+
+        assertTrue(openingPromise.cause() instanceof CancellationException);
+        assertTrue(contentPromise.cause() instanceof CancellationException);
+        assertTrue(closingPromise.cause() instanceof CancellationException);
+        assertFalse(channel.isOpen());
+        assertThrows(CancellationException.class, channel::checkException);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
     private static void negotiateCausalCapabilities(EmbeddedChannel channel) {
         assertTrue(channel.writeOutbound(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL));
         ReferenceCountUtil.safeRelease(channel.readOutbound());
@@ -765,6 +941,34 @@ class RakNetSimpleMultiChannelCodecTest {
             }
         }
 
+    }
+
+    private static final class CancelOutboundMessage
+            extends ChannelOutboundHandlerAdapter {
+
+        private final int packetId;
+        private final Object identity;
+
+        private CancelOutboundMessage(int packetId, Object identity) {
+            this.packetId = packetId;
+            this.identity = identity;
+        }
+
+        @Override
+        public void write(
+                ChannelHandlerContext ctx,
+                Object msg,
+                ChannelPromise promise
+        ) {
+            if (msg == identity
+                    || msg instanceof FrameData frame
+                    && frame.getPacketId() == packetId) {
+                ReferenceCountUtil.safeRelease(msg);
+                promise.cancel(false);
+                return;
+            }
+            ctx.write(msg, promise);
+        }
     }
 
 }

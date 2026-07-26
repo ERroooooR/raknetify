@@ -30,6 +30,7 @@ import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.handler.codec.CorruptedFrameException;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -109,6 +110,40 @@ class CausalTransportProtocolTest {
                 assertArrayEquals(new byte[]{0}, bytes(decoded.get(0)));
                 assertArrayEquals(new byte[]{1, 2, 3}, bytes(decoded.get(1)));
                 assertArrayEquals(new byte[]{0}, bytes(decoded.get(2)));
+            } finally {
+                decoded.forEach(ByteBuf::release);
+            }
+        } finally {
+            encoded.release();
+            source.forEach(ByteBuf::release);
+        }
+    }
+
+    @Test
+    void atomicBundleAcceptsVanillasMaximumContentPacketCount() {
+        final List<ByteBuf> source = new ArrayList<>(
+                CausalTransportProtocol.MAX_ATOMIC_BUNDLE_PACKETS
+        );
+        source.add(Unpooled.wrappedBuffer(new byte[]{0}));
+        for (int i = 0;
+             i < CausalTransportProtocol.MAX_ATOMIC_BUNDLE_CONTENT_PACKETS;
+             i++) {
+            source.add(Unpooled.wrappedBuffer(new byte[]{1}));
+        }
+        source.add(Unpooled.wrappedBuffer(new byte[]{0}));
+
+        final ByteBuf encoded = CausalTransportProtocol.encodeAtomicBundle(
+                UnpooledByteBufAllocator.DEFAULT,
+                source
+        );
+        try {
+            final List<ByteBuf> decoded =
+                    CausalTransportProtocol.decodeAtomicBundle(encoded);
+            try {
+                assertEquals(
+                        CausalTransportProtocol.MAX_ATOMIC_BUNDLE_PACKETS,
+                        decoded.size()
+                );
             } finally {
                 decoded.forEach(ByteBuf::release);
             }
