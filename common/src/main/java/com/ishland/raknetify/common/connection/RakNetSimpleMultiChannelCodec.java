@@ -26,7 +26,6 @@ package com.ishland.raknetify.common.connection;
 
 import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
-import com.ishland.raknetify.common.connection.multichannel.DependencyDomainScheduler;
 import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
@@ -54,7 +53,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private final int packetId;
     private final BoundedPendingWriteQueue pendingWrites;
     private final BoundedPendingWriteQueue pendingControlWrites;
-    private final DependencyDomainScheduler<ScheduledWrite> domainScheduler;
+    private final DependencyDomainFrameScheduler domainFrameScheduler;
     private final CausalCapabilityNegotiator capabilityNegotiator =
             new CausalCapabilityNegotiator();
     private final InboundGameplayEpochGate inboundEpochGate =
@@ -85,7 +84,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
-        this.domainScheduler = new DependencyDomainScheduler<>(
+        this.domainFrameScheduler = new DependencyDomainFrameScheduler(
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
@@ -121,8 +120,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private boolean queuePendingWrites = false;
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
-    private boolean domainDrainScheduled;
-
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
@@ -130,7 +127,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         atomicBundleAssembler.abort(cause);
         failPendingControlWrites(ctx, cause);
         inboundEpochGate.close(ctx);
-        failScheduledWrites(ctx, cause);
+        domainFrameScheduler.fail(ctx, cause);
         capabilityNegotiator.clear(ctx.channel());
         super.handlerRemoved(ctx);
     }
@@ -183,7 +180,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 // The dependency-domain scheduler may still contain writes
                 // from this event-loop turn. They causally precede the fence
                 // request and must enter FrameOrderOut before its markers.
-                drainScheduledWrites(ctx);
+                domainFrameScheduler.drain(ctx);
                 this.isMultichannelEnabled = false;
                 if (isOutboundGameplayEpochNegotiated()) {
                     waitingForEpochFence = true;
@@ -583,7 +580,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     @Override
     public void flush(ChannelHandlerContext ctx) throws Exception {
-        drainScheduledWrites(ctx);
+        domainFrameScheduler.drain(ctx);
         super.flush(ctx);
     }
 
@@ -598,103 +595,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return;
         }
 
-        final int bytes = frameData.getDataSize();
-        if (!domainScheduler.offer(
-                domain,
-                new ScheduledWrite(frameData, promise, bytes),
-                bytes
-        )) {
-            final CorruptedFrameException exception = new CorruptedFrameException(
-                    "Dependency-domain scheduler exceeded its bound "
-                            + "(frames=" + domainScheduler.size()
-                            + ", bytes=" + domainScheduler.bytes() + ")"
-            );
-            promise.tryFailure(exception);
-            ReferenceCountUtil.safeRelease(frameData);
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalOutboundQueueOverflow(
-                        SimpleMetricsLogger.CausalOutboundQueue.DOMAIN_SCHEDULER
-                );
-            }
-            failScheduledWrites(ctx, exception);
-            ctx.fireExceptionCaught(exception);
-            ctx.close();
-            return;
-        }
-        recordDomainQueued(ctx, domain, bytes);
-        if (!domainDrainScheduled) {
-            domainDrainScheduled = true;
-            ctx.executor().execute(() -> {
-                domainDrainScheduled = false;
-                if (!domainScheduler.isEmpty()) {
-                    drainScheduledWrites(ctx);
-                    ctx.flush();
-                }
-            });
-        }
-    }
-
-    private void drainScheduledWrites(ChannelHandlerContext ctx) {
-        DependencyDomainScheduler.Scheduled<ScheduledWrite> scheduled;
-        while ((scheduled = domainScheduler.poll()) != null) {
-            final ScheduledWrite write = scheduled.value();
-            try {
-                ctx.write(write.frameData, write.promise);
-                recordDomainSent(ctx, scheduled.domain(), write.bytes);
-            } catch (Throwable throwable) {
-                recordDomainDiscarded(ctx, scheduled.domain(), write.bytes);
-                ReferenceCountUtil.safeRelease(write.frameData);
-                write.promise.tryFailure(throwable);
-                failScheduledWrites(ctx, throwable);
-                ctx.fireExceptionCaught(throwable);
-                ctx.close();
-                return;
-            }
-        }
-    }
-
-    private void failScheduledWrites(ChannelHandlerContext ctx, Throwable cause) {
-        DependencyDomainScheduler.Scheduled<ScheduledWrite> scheduled;
-        while ((scheduled = domainScheduler.poll()) != null) {
-            final ScheduledWrite write = scheduled.value();
-            recordDomainDiscarded(ctx, scheduled.domain(), write.bytes);
-            ReferenceCountUtil.safeRelease(write.frameData);
-            write.promise.tryFailure(cause);
-        }
-    }
-
-    private static void recordDomainQueued(
-            ChannelHandlerContext ctx,
-            DependencyDomain domain,
-            int bytes
-    ) {
-        if (ctx.channel().config() instanceof RakNet.Config config
-                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
-            logger.dependencyDomainQueued(domain, bytes);
-        }
-    }
-
-    private static void recordDomainSent(
-            ChannelHandlerContext ctx,
-            DependencyDomain domain,
-            int bytes
-    ) {
-        if (ctx.channel().config() instanceof RakNet.Config config
-                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
-            logger.dependencyDomainSent(domain, bytes);
-        }
-    }
-
-    private static void recordDomainDiscarded(
-            ChannelHandlerContext ctx,
-            DependencyDomain domain,
-            int bytes
-    ) {
-        if (ctx.channel().config() instanceof RakNet.Config config
-                && config.getMetrics() instanceof SimpleMetricsLogger logger) {
-            logger.dependencyDomainDiscarded(domain, bytes);
-        }
+        domainFrameScheduler.schedule(ctx, domain, frameData, promise);
     }
 
     private static SimpleMetricsLogger metrics(ChannelHandlerContext ctx) {
@@ -911,13 +812,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             }
             return OverrideResult.route(override);
         }
-    }
-
-    private record ScheduledWrite(
-            FrameData frameData,
-            ChannelPromise promise,
-            int bytes
-    ) {
     }
 
 }

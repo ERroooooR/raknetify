@@ -143,6 +143,12 @@ within each queue. Strict world and guarded bulk share one FIFO. The old reflect
 replacement of `ReliabilityHandler.frameQueue` has been removed. JSONL metrics now expose queued,
 sent and pending frame/byte arrays in `DependencyDomain` enum order.
 
+The pure DRR policy is separated from its Netty ownership adapter. The adapter is the sole owner of
+scheduled `FrameData` references and promises until it either hands them to the next outbound
+handler or fails them. It coalesces all writes from one event-loop turn into one flush, lets a
+transition fence synchronously drain every causally earlier frame before writing its markers, and
+fails/releases both the rejected frame and all retained frames on overflow or handler removal.
+
 ## Verification
 
 Automated verification now:
@@ -174,6 +180,10 @@ Automated verification now:
 - Exercises byte/count overflow independently at the application, bundle-control, transport-fence
   and dependency-domain scheduler hold points, asserting that every promise fails and every
   reference-counted message is released.
+- Exercises the dependency-domain Netty adapter independently from the DRR policy: an explicit
+  fence drain retains FIFO/DRR order without issuing a later redundant flush, event-loop writes
+  coalesce into one flush, and both overflow and removal release every owned frame and fail every
+  promise.
 - Exercises the extracted inbound epoch gate directly: future frames remain retained until the
   matching commit, are released to Minecraft in insertion order, and both count and byte overflow
   paths release the rejected payload plus every payload retained at channel removal.
