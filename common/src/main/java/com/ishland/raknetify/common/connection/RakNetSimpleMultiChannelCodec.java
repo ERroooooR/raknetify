@@ -30,6 +30,7 @@ import com.ishland.raknetify.common.connection.multichannel.MultichannelPolicy;
 import com.ishland.raknetify.common.util.MathUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.CorruptedFrameException;
@@ -51,7 +52,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     public static final Object SIGNAL_START_MULTICHANNEL = new Object();
 
     private final int packetId;
-    private final BoundedPendingWriteQueue pendingWrites;
+    private final OutboundGameplayEpochGate outboundGameplayGate;
     private final BoundedPendingWriteQueue pendingControlWrites;
     private final DependencyDomainFrameScheduler domainFrameScheduler;
     private final CausalCapabilityNegotiator capabilityNegotiator =
@@ -76,7 +77,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             throw new IllegalArgumentException("Pending causal queue limits must be positive");
         }
         this.packetId = packetId;
-        this.pendingWrites = new BoundedPendingWriteQueue(
+        this.outboundGameplayGate = new OutboundGameplayEpochGate(
                 maxPendingWrites,
                 maxPendingWriteBytes
         );
@@ -115,15 +116,12 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private boolean isMultichannelEnabled;
-    private boolean waitingForEpochFence;
-    private int outboundEpoch;
-
-    private boolean queuePendingWrites = false;
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
+
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
         final IllegalStateException cause = new IllegalStateException("Channel closed");
-        failPendingWrites(ctx, cause);
+        outboundGameplayGate.close(ctx, cause);
         atomicBundleAssembler.abort(cause);
         failPendingControlWrites(ctx, cause);
         inboundEpochGate.close(ctx);
@@ -134,8 +132,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        if (this.queuePendingWrites) {
-            queuePendingWrite(ctx, msg, promise);
+        if (outboundGameplayGate.isHolding()) {
+            final CorruptedFrameException overflow =
+                    outboundGameplayGate.hold(ctx, msg, promise);
+            if (overflow != null) {
+                failAllCausalWrites(ctx, overflow);
+                ctx.fireExceptionCaught(overflow);
+                ctx.close();
+            }
             return;
         }
 
@@ -154,23 +158,39 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             }
             capabilityNegotiator.sendAdvertisement(ctx, false);
             final ByteBuf buf = ctx.alloc().buffer(1).writeByte(0);
+            final OutboundGameplayEpochGate.Hold hold =
+                    outboundGameplayGate.beginHold();
+            FrameData frameData = null;
             try {
-                final FrameData frameData = FrameData.create(ctx.alloc(), Constants.RAKNET_PING_PACKET_ID, buf);
+                frameData = FrameData.create(
+                        ctx.alloc(),
+                        Constants.RAKNET_PING_PACKET_ID,
+                        buf
+                );
                 frameData.setOrderChannel(7);
-                this.queuePendingWrites = true;
-                ctx.write(frameData).addListener(future -> {
+                final ChannelFuture startFuture = ctx.write(frameData);
+                frameData = null;
+                startFuture.addListener(future -> {
                     if (future.isSuccess()) {
+                        if (!outboundGameplayGate.open(hold)) {
+                            return;
+                        }
                         isMultichannelEnabled = true;
                         if (Constants.DEBUG)
                             System.out.println("Raknetify: [MultiChannellingDataCodec] Started multichannel");
-                        flushPendingWrites(ctx);
+                        replayPendingGameplayWrites(ctx);
                     } else {
-                        queuePendingWrites = false;
-                        failPendingWrites(ctx, future.cause());
+                        outboundGameplayGate.fail(ctx, hold, future.cause());
                     }
                 });
+            } catch (Throwable throwable) {
+                outboundGameplayGate.fail(ctx, hold, throwable);
+                failAllCausalWrites(ctx, throwable);
+                ctx.fireExceptionCaught(throwable);
+                ctx.close();
             } finally {
                 buf.release();
+                ReferenceCountUtil.safeRelease(frameData);
             }
             return;
         }
@@ -183,13 +203,15 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 domainFrameScheduler.drain(ctx);
                 this.isMultichannelEnabled = false;
                 if (isOutboundGameplayEpochNegotiated()) {
-                    waitingForEpochFence = true;
-                    queuePendingWrites = true;
+                    final OutboundGameplayEpochGate.Hold hold =
+                            outboundGameplayGate.beginHold();
                     promise.addListener(future -> {
                         if (!future.isSuccess()) {
-                            waitingForEpochFence = false;
-                            queuePendingWrites = false;
-                            failPendingWrites(ctx, future.cause());
+                            outboundGameplayGate.fail(
+                                    ctx,
+                                    hold,
+                                    future.cause()
+                            );
                         }
                     });
                 }
@@ -219,7 +241,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                                 buf,
                                 promise,
                                 decision.isBundleDelimiter(),
-                                outboundEpoch,
+                                outboundGameplayGate.currentEpoch(),
                                 isGameplayEpochFramingEnabled()
                         );
                 if (completedBundle != null) {
@@ -263,7 +285,11 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             final FrameData frameData;
             try {
                 gameplayPayload = isGameplayEpochFramingEnabled()
-                        ? CausalTransportProtocol.encodeGameplayFrame(ctx.alloc(), outboundEpoch, buf)
+                        ? CausalTransportProtocol.encodeGameplayFrame(
+                                ctx.alloc(),
+                                outboundGameplayGate.currentEpoch(),
+                                buf
+                        )
                         : buf.retain();
                 frameData = FrameData.create(ctx.alloc(), packetId, gameplayPayload);
             } finally {
@@ -354,43 +380,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         }
     }
 
-    private void flushPendingWrites(ChannelHandlerContext ctx) {
-        this.queuePendingWrites = false;
-        BoundedPendingWriteQueue.PendingWrite pendingWrite;
-        boolean replayedWrite = false;
-        while (!this.queuePendingWrites
-                && (pendingWrite = this.pendingWrites.poll()) != null) {
-            recordPendingWriteQueueState(
-                    ctx,
-                    pendingWrites,
-                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION
-            );
-            try {
-                write(ctx, pendingWrite.message(), pendingWrite.promise());
-                replayedWrite = true;
-            } catch (Throwable t) {
-                pendingWrite.promise().tryFailure(t);
-                ReferenceCountUtil.safeRelease(pendingWrite.message());
-                failAllCausalWrites(ctx, t);
-                ctx.fireExceptionCaught(t);
-                ctx.close();
-                return;
-            }
-        }
-        if (replayedWrite) {
-            ctx.flush();
-        }
-    }
-
-    private void failPendingWrites(ChannelHandlerContext ctx, Throwable cause) {
-        pendingWrites.failAll(cause);
-        recordPendingWriteQueueState(
-                ctx,
-                pendingWrites,
-                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION
-        );
-    }
-
     private void failPendingControlWrites(
             ChannelHandlerContext ctx,
             Throwable cause
@@ -401,32 +390,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 pendingControlWrites,
                 SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
         );
-    }
-
-    private void queuePendingWrite(
-            ChannelHandlerContext ctx,
-            Object message,
-            ChannelPromise promise
-    ) {
-        if (!pendingWrites.tryAdd(message, promise)) {
-            failPendingQueueOverflow(
-                    ctx,
-                    pendingWrites,
-                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
-                    "application",
-                    message,
-                    promise
-            );
-            return;
-        }
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalOutboundFrameQueued(
-                    SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
-                    pendingWrites.size(),
-                    pendingWrites.bytes()
-            );
-        }
     }
 
     private void queuePendingControlWrite(
@@ -483,11 +446,22 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             ChannelHandlerContext ctx,
             Throwable cause
     ) {
-        queuePendingWrites = false;
-        waitingForEpochFence = false;
         atomicBundleAssembler.abort(cause);
         failPendingControlWrites(ctx, cause);
-        failPendingWrites(ctx, cause);
+        outboundGameplayGate.close(ctx, cause);
+    }
+
+    private void replayPendingGameplayWrites(ChannelHandlerContext ctx) {
+        final Throwable replayFailure =
+                outboundGameplayGate.replay(
+                        ctx,
+                        (message, promise) -> write(ctx, message, promise)
+                );
+        if (replayFailure != null) {
+            failAllCausalWrites(ctx, replayFailure);
+            ctx.fireExceptionCaught(replayFailure);
+            ctx.close();
+        }
     }
 
     private void recordPendingWriteQueueState(
@@ -543,7 +517,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     private boolean isGameplayEpochFramingEnabled() {
         return isOutboundGameplayEpochNegotiated()
-                && (isMultichannelEnabled || outboundEpoch > 0);
+                && (isMultichannelEnabled
+                || outboundGameplayGate.currentEpoch() > 0);
     }
 
     protected boolean isMultichannelAvailable() {
@@ -681,19 +656,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         if (evt instanceof SynchronizationLayer.InboundEpochAdvanced advanced) {
             inboundEpochGate.advance(ctx, advanced.epoch());
         } else if (evt instanceof SynchronizationLayer.OutboundEpochAdvanced advanced) {
-            if (advanced.epoch() != outboundEpoch + 1) {
-                throw new CorruptedFrameException("Outbound gameplay epoch skipped from "
-                        + outboundEpoch + " to " + advanced.epoch());
-            }
-            outboundEpoch = advanced.epoch();
-            waitingForEpochFence = false;
-            queuePendingWrites = false;
+            outboundGameplayGate.advance(advanced.epoch());
             // A restart signal is a barrier for the new epoch. Process it
             // before releasing application packets so those packets cannot be
             // encoded on the pre-start/default order channel.
             flushPendingControlWrites(ctx);
-            if (!queuePendingWrites) {
-                flushPendingWrites(ctx);
+            if (!outboundGameplayGate.isHolding()) {
+                replayPendingGameplayWrites(ctx);
             }
         }
         super.userEventTriggered(ctx, evt);

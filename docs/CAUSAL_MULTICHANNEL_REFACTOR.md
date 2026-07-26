@@ -125,6 +125,13 @@ leaving the connection indefinitely waiting for an ACK that can never arrive. Ea
 marker failure also carries its originating fence ID and epoch, so a delayed callback from a
 completed fence cannot accidentally fail a newer active fence.
 
+The codec's outbound gameplay gate separately owns application writes waiting for either an epoch
+ACK or the channel-7 multichannel start barrier. The former shared booleans and raw queue are
+replaced by generation-tagged holds: replay stops as soon as a queued control action closes a new
+generation, and a delayed completion/failure from the previous generation cannot open or fail that
+new gate. The same object validates sequential outbound epochs and owns all queued application
+references through replay, overflow and channel removal.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -212,6 +219,9 @@ Automated verification now:
   promises before a queued fence starts re-entrantly, stale ACKs are ignored, future/mismatched
   ACKs fail closed, delayed failures cannot cross fence generations, and overflow, replay failure
   or removal releases every owned write.
+- Exercises the outbound gameplay gate directly: a queued start barrier stops replay and retains
+  later application writes under a new generation, stale generation failures are ignored, epoch
+  advances are sequential, and overflow/replay/removal failures release every owned reference.
 - Delays the local capability acknowledgement while allowing the remote advertisement to arrive,
   then verifies outbound gameplay remains unframed on strict channel 7 until confirmation. It also
   verifies pre-confirmation peers never receive the new ACK type, remain strict outbound, and can
