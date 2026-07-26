@@ -43,9 +43,7 @@ import network.ycc.raknet.frame.FrameData;
 import network.ycc.raknet.packet.FramedPacket;
 import network.ycc.raknet.RakNet;
 
-import java.util.LinkedList;
 import java.util.List;
-import java.util.Queue;
 
 public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
@@ -59,6 +57,8 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private final DependencyDomainScheduler<ScheduledWrite> domainScheduler;
     private final CausalCapabilityNegotiator capabilityNegotiator =
             new CausalCapabilityNegotiator();
+    private final InboundGameplayEpochGate inboundEpochGate =
+            new InboundGameplayEpochGate();
 
     public RakNetSimpleMultiChannelCodec(int packetId) {
         this(
@@ -118,12 +118,9 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     private boolean isMultichannelEnabled;
     private boolean waitingForEpochFence;
     private int outboundEpoch;
-    private int inboundEpoch;
 
     private boolean queuePendingWrites = false;
     private final AtomicBundleAssembler atomicBundleAssembler = new AtomicBundleAssembler();
-    private final Queue<PendingInboundEpochFrame> pendingInboundEpochFrames = new LinkedList<>();
-    private int pendingInboundEpochBytes;
     private boolean domainDrainScheduled;
 
     @Override
@@ -132,7 +129,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         failPendingWrites(ctx, cause);
         atomicBundleAssembler.abort(cause);
         failPendingControlWrites(ctx, cause);
-        failPendingInboundEpochFrames(ctx);
+        inboundEpochGate.close(ctx);
         failScheduledWrites(ctx, cause);
         capabilityNegotiator.clear(ctx.channel());
         super.handlerRemoved(ctx);
@@ -725,9 +722,9 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                                     "Atomic bundle was not delivered on reliable ordered channel 7"
                             );
                         }
-                        handleEpochGameplayFrame(ctx, payload);
+                        inboundEpochGate.handle(ctx, payload);
                     } else if (isInboundGameplayEpochNegotiated()
-                            && inboundEpoch > 0) {
+                            && inboundEpochGate.currentEpoch() > 0) {
                         // A completed drain fence proves that no unframed packet
                         // from the previous epoch may still be valid.
                         final SimpleMetricsLogger metrics = metrics(ctx);
@@ -775,132 +772,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
         if (metrics != null) {
             metrics.causalAtomicBundleInbound(packets.size());
         }
-        firePackets(ctx, packets);
-    }
-
-    private void handleEpochGameplayFrame(ChannelHandlerContext ctx, ByteBuf payload) {
-        final int epoch;
-        try {
-            epoch = CausalTransportProtocol.peekGameplayEpoch(payload);
-        } catch (RuntimeException exception) {
-            payload.release();
-            throw exception;
-        }
-        if (epoch < inboundEpoch) {
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalStaleFrameDropped();
-            }
-            payload.release();
-            return;
-        }
-        if (epoch > inboundEpoch) {
-            if (inboundEpoch == Integer.MAX_VALUE
-                    || epoch != inboundEpoch + 1) {
-                payload.release();
-                throw new CorruptedFrameException(
-                        "Inbound gameplay epoch skipped from "
-                                + inboundEpoch + " to " + epoch
-                );
-            }
-            if (pendingInboundEpochFrames.size()
-                    >= CausalTransportProtocol.MAX_ATOMIC_BUNDLE_PACKETS
-                    || payload.readableBytes() > Constants.MAX_QUEUED_SIZE - pendingInboundEpochBytes) {
-                payload.release();
-                throw new CorruptedFrameException("Pending gameplay epoch queue exceeded its bound");
-            }
-            pendingInboundEpochFrames.add(new PendingInboundEpochFrame(epoch, payload));
-            pendingInboundEpochBytes += payload.readableBytes();
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalFutureFrameQueued(
-                        pendingInboundEpochFrames.size(),
-                        pendingInboundEpochBytes
-                );
-            }
-            return;
-        }
-        fireEpochGameplayFrame(ctx, payload);
-    }
-
-    private void fireEpochGameplayFrame(ChannelHandlerContext ctx, ByteBuf payload) {
-        final CausalTransportProtocol.GameplayFrame gameplayFrame;
-        try {
-            gameplayFrame = CausalTransportProtocol.decodeGameplayFrame(payload);
-        } finally {
-            payload.release();
-        }
-        if (gameplayFrame.epoch() != inboundEpoch) {
-            gameplayFrame.packets().forEach(ReferenceCountUtil::safeRelease);
-            throw new CorruptedFrameException("Gameplay epoch changed while decoding");
-        }
-        if (gameplayFrame.atomicBundle()) {
-            final SimpleMetricsLogger metrics = metrics(ctx);
-            if (metrics != null) {
-                metrics.causalAtomicBundleInbound(gameplayFrame.packets().size());
-            }
-        }
-        firePackets(ctx, gameplayFrame.packets());
-    }
-
-    private static void firePackets(ChannelHandlerContext ctx, List<ByteBuf> packets) {
-        try {
-            for (int i = 0; i < packets.size(); i++) {
-                final ByteBuf packet = packets.set(i, null);
-                ctx.fireChannelRead(packet);
-            }
-        } finally {
-            packets.forEach(ReferenceCountUtil::safeRelease);
-        }
-    }
-
-    private void advanceInboundEpoch(ChannelHandlerContext ctx, int epoch) {
-        if (epoch <= inboundEpoch) {
-            return;
-        }
-        if (epoch != inboundEpoch + 1) {
-            throw new CorruptedFrameException("Inbound gameplay epoch skipped from "
-                    + inboundEpoch + " to " + epoch);
-        }
-        inboundEpoch = epoch;
-        final int queued = pendingInboundEpochFrames.size();
-        for (int i = 0; i < queued; i++) {
-            final PendingInboundEpochFrame pending = pendingInboundEpochFrames.poll();
-            pendingInboundEpochBytes -= pending.payload.readableBytes();
-            if (pending.epoch < inboundEpoch) {
-                pending.payload.release();
-            } else if (pending.epoch == inboundEpoch) {
-                fireEpochGameplayFrame(ctx, pending.payload);
-            } else {
-                pendingInboundEpochFrames.add(pending);
-                pendingInboundEpochBytes += pending.payload.readableBytes();
-            }
-        }
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalFutureQueueState(
-                    pendingInboundEpochFrames.size(),
-                    pendingInboundEpochBytes
-            );
-        }
-    }
-
-    private void failPendingInboundEpochFrames(ChannelHandlerContext ctx) {
-        PendingInboundEpochFrame pending;
-        while ((pending = pendingInboundEpochFrames.poll()) != null) {
-            pending.payload.release();
-        }
-        pendingInboundEpochBytes = 0;
-        final SimpleMetricsLogger metrics = metrics(ctx);
-        if (metrics != null) {
-            metrics.causalFutureQueueState(0, 0L);
-        }
+        InboundGameplayEpochGate.firePackets(ctx, packets);
     }
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
         if (evt instanceof SynchronizationLayer.InboundEpochAdvanced advanced) {
-            advanceInboundEpoch(ctx, advanced.epoch());
+            inboundEpochGate.advance(ctx, advanced.epoch());
         } else if (evt instanceof SynchronizationLayer.OutboundEpochAdvanced advanced) {
             if (advanced.epoch() != outboundEpoch + 1) {
                 throw new CorruptedFrameException("Outbound gameplay epoch skipped from "
@@ -1033,9 +911,6 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             }
             return OverrideResult.route(override);
         }
-    }
-
-    private record PendingInboundEpochFrame(int epoch, ByteBuf payload) {
     }
 
     private record ScheduledWrite(

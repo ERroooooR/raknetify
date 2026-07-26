@@ -103,6 +103,13 @@ reopen multichannel delivery early. Each Commands packet closes one scope; only 
 emits the restart barrier. A failed scope-fence write clears the state and closes the connection
 instead of leaving future transition packets permanently unfenced.
 
+Inbound gameplay epoch ownership is isolated in a Common gate instead of being interleaved with
+packet classification, capability negotiation and outbound scheduling. The gate owns every
+future-epoch payload until the matching fence commits, preserves insertion order, rejects any jump
+larger than `current + 1`, and applies independent count and byte bounds. Removal or overflow
+releases all retained buffers; the codec only decides whether a frame is eligible for epoch
+handling and delegates its lifetime to the gate.
+
 ## Stage 4: dependency domains
 
 - Classify packets as strict world state, independent control, ephemeral effects or guarded bulk.
@@ -167,6 +174,9 @@ Automated verification now:
 - Exercises byte/count overflow independently at the application, bundle-control, transport-fence
   and dependency-domain scheduler hold points, asserting that every promise fails and every
   reference-counted message is released.
+- Exercises the extracted inbound epoch gate directly: future frames remain retained until the
+  matching commit, are released to Minecraft in insertion order, and both count and byte overflow
+  paths release the rejected payload plus every payload retained at channel removal.
 - Injects conflicting capability advertisements, incomplete/unknown epoch headers, skipped future
   epochs, incomplete channel masks, interleaved fence IDs and completed-ID reuse, requiring every
   malformed transition to fail before state is committed or memory is retained.
