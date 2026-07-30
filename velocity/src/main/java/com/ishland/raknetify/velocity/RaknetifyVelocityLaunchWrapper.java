@@ -28,6 +28,7 @@ import com.ishland.raknetify.velocity.init.VelocityPacketRegistryInjector;
 import com.ishland.raknetify.velocity.init.VelocityRaknetifyServer;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.connection.LoginEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.event.proxy.ListenerBoundEvent;
 import com.velocitypowered.api.event.proxy.ListenerCloseEvent;
@@ -64,6 +65,7 @@ public class RaknetifyVelocityLaunchWrapper {
         PROXY.getEventManager().register(INSTANCE, LoginEvent.class, PostOrder.LAST, RakNetVelocityConnectionUtil::onPlayerLogin);
         PROXY.getEventManager().register(INSTANCE, ListenerBoundEvent.class, PostOrder.LAST, VelocityRaknetifyServer::start);
         PROXY.getEventManager().register(INSTANCE, ListenerCloseEvent.class, PostOrder.LAST, VelocityRaknetifyServer::stop);
+        PROXY.getEventManager().register(INSTANCE, ServerConnectedEvent.class, PostOrder.LAST, RakNetVelocityConnectionUtil::onServerSwitchStart);
         PROXY.getEventManager().register(INSTANCE, ServerPostConnectEvent.class, PostOrder.LAST, RakNetVelocityConnectionUtil::onServerSwitch);
     }
 

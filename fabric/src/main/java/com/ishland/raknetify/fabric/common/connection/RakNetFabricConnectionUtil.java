@@ -66,7 +66,9 @@ public class RakNetFabricConnectionUtil {
             // Keep those frames on one ordered RakNet channel because their
             // original packet boundaries are no longer available for prioritizing.
             multiChannelCodec.addHandler((buf, suppressWarning) ->
-                    channel.pipeline().get("zstd_encoder") != null ? 7 : 0
+                    channel.pipeline().get("zstd_encoder") != null
+                            ? RakNetSimpleMultiChannelCodec.OverrideResult.strict()
+                            : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
@@ -99,10 +101,18 @@ public class RakNetFabricConnectionUtil {
             return;
         }
 //        System.out.println("Reordering");
-        ChannelHandler handler = pipeline.remove(RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE);
-        if (handler != null) {
-            pipeline.addAfter("encoder", RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE, handler);
+        final ChannelHandler handler = pipeline.get(
+                RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE
+        );
+        if (handler == null) {
+            return;
         }
+        pipeline.remove(handler);
+        pipeline.addAfter(
+                "encoder",
+                RakNetFabricConnectionUtil.NAME_RAKNETIFY_MULTI_CHANNEL_PACKET_CATURE,
+                handler
+        );
     }
 
     public static DatagramChannel fromSocketChannel(Class<? extends SocketChannel> clazz) {

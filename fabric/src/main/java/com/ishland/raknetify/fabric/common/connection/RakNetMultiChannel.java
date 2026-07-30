@@ -25,6 +25,7 @@
 package com.ishland.raknetify.fabric.common.connection;
 
 import com.google.common.collect.Sets;
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.MappingResolver;
@@ -348,7 +349,7 @@ public class RakNetMultiChannel {
             "net/minecraft/class_2672", // ChunkDataS2CPacket
             "net/minecraft/class_2622", // BlockEntityUpdateS2CPacket
             "net/minecraft/class_2676", // LightUpdateS2CPacket
-            "net/minecraft/class_8212", // BiomeUpdateS2CPacket
+            "net/minecraft/class_8212", // ChunkBiomeData / BiomeUpdate S2C
             "net/minecraft/class_8738", // ChunkSentS2CPacket
             "net/minecraft/class_8739", // StartChunkSendS2CPacket
             "net/minecraft/class_8590", // AcknowledgeChunksC2SPacket
@@ -364,11 +365,22 @@ public class RakNetMultiChannel {
 
     });
 
+    /**
+     * Bulk world bodies use channel 6 only after the peer negotiates the
+     * guarded-bulk watermark protocol. Compatibility with older peers falls
+     * back to the strict queue and channel 7.
+     */
+    private static final Set<Class<?>> guardedBulk = createClassSet(new String[]{
+            "net/minecraft/class_2672", // ChunkDataS2CPacket
+            "net/minecraft/class_2676", // LightUpdateS2CPacket
+            "net/minecraft/class_8212", // ChunkBiomeData / BiomeUpdate S2C
+    });
+
     private static final Set<Class<?>> unreliable = createClassSet(new String[]{
     });
 
     private static final Set<Class<?>> theVoid = createClassSet(new String[]{
-            "net/minecraft/class_8037", // BundleDelimiterPacket
+            "net/minecraft/class_8037", // BundleSplitterPacket
             "net/minecraft/class_9093", // BundleDelimiterS2CPacket
     });
 
@@ -408,7 +420,7 @@ public class RakNetMultiChannel {
     public static int getPacketChannelOverride(Class<?> clazz, boolean suppressWarning) {
         if (clazz == null) {
             System.err.println("Raknetify: Warning: Tried to send packet without setting packet class");
-            return 0;
+            return 7;
         }
         int channelOverride = classToChannelIdOverride.getInt(clazz);
         if (channelOverride == Integer.MAX_VALUE) {
@@ -422,6 +434,21 @@ public class RakNetMultiChannel {
             channelOverride = 7;
         }
         return channelOverride;
+    }
+
+    public static DependencyDomain getPacketDependencyDomain(
+            Class<?> clazz,
+            boolean suppressWarning
+    ) {
+        if (clazz == null) {
+            return DependencyDomain.STRICT_WORLD;
+        }
+        if (guardedBulk.contains(clazz)) {
+            return DependencyDomain.GUARDED_BULK;
+        }
+        return DependencyDomain.fromLegacyChannel(
+                getPacketChannelOverride(clazz, suppressWarning)
+        );
     }
 
     public static void init() {

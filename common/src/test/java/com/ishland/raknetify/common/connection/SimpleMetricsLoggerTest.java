@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -59,11 +60,47 @@ class SimpleMetricsLoggerTest {
         logger.targetedFecRepair(2, 384);
         logger.targetedFecRecovered(1);
         logger.adaptiveBytePacingRate(512000L);
+        logger.adaptiveAdmissionDiagnostics(768000L, 250D, true);
         logger.fragmentReassemblyPending(2, 8192L, 5_000_000L);
         logger.fragmentReassemblyComplete(4096, 8_000_000L);
         logger.orderedQueuePending(3, 6_000_000L);
         logger.orderedQueueRelease(4, 9_000_000L);
         logger.applicationBatch(32768);
+        logger.dependencyDomainQueued(DependencyDomain.GUARDED_BULK, 8192);
+        logger.dependencyDomainSent(DependencyDomain.GUARDED_BULK, 8192);
+        logger.causalFenceStarted(1);
+        logger.causalFenceCompleted(1);
+        logger.causalFenceStarted(2);
+        logger.causalFenceFailed();
+        logger.causalInboundFenceCompleted(1);
+        logger.causalStaleFrameDropped();
+        logger.causalOutboundFrameQueued(
+                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
+                2,
+                1024
+        );
+        logger.causalOutboundQueueState(
+                SimpleMetricsLogger.CausalOutboundQueue.APPLICATION,
+                0,
+                0
+        );
+        logger.causalOutboundFrameQueued(
+                SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                1,
+                64
+        );
+        logger.causalOutboundQueueState(
+                SimpleMetricsLogger.CausalOutboundQueue.FENCE,
+                0,
+                0
+        );
+        logger.causalOutboundQueueOverflow(
+                SimpleMetricsLogger.CausalOutboundQueue.BUNDLE_CONTROL
+        );
+        logger.causalFutureFrameQueued(1, 4096);
+        logger.causalFutureQueueState(0, 0);
+        logger.causalAtomicBundleOutbound(7);
+        logger.causalAtomicBundleInbound(7);
         logger.ackRepeated(3);
         logger.adaptiveAckPolicy(true, 8_000_000L, 10_000_000L);
         logger.adaptiveDemand(false, "BULK", 150_000_000L, 4L);
@@ -113,6 +150,9 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"targeted_fec_bytes\":384"));
         assertTrue(line.contains("\"targeted_fec_recovered\":1"));
         assertTrue(line.contains("\"byte_pacing_bps\":512000"));
+        assertTrue(line.contains("\"byte_pacing_target_bps\":768000"));
+        assertTrue(line.contains("\"burst_floor_pps\":250.000"));
+        assertTrue(line.contains("\"rtt_pressure_active\":true"));
         assertTrue(line.contains("\"validated_path_bps\":1048576"));
         assertTrue(line.contains("\"delivery_sample_application_limited\":true"));
         assertTrue(line.contains("\"resume_state\":\"UNVALIDATED\""));
@@ -123,6 +163,36 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ordered_pending_frames\":3"));
         assertTrue(line.contains("\"application_batches\":1"));
         assertTrue(line.contains("\"application_batch_max_bytes\":32768"));
+        assertTrue(line.contains("\"dependency_domain_queued_frames\":[0, 0, 0, 1]"));
+        assertTrue(line.contains("\"dependency_domain_sent_bytes\":[0, 0, 0, 8192]"));
+        assertTrue(line.contains("\"dependency_domain_pending_frames\":[0, 0, 0, 0]"));
+        assertTrue(line.contains("\"causal_fences_started\":2"));
+        assertTrue(line.contains("\"causal_fences_completed\":1"));
+        assertTrue(line.contains("\"causal_fences_failed\":1"));
+        assertTrue(line.contains("\"causal_inbound_fences_completed\":1"));
+        assertTrue(line.contains("\"causal_outbound_epoch\":1"));
+        assertTrue(line.contains("\"causal_inbound_epoch\":1"));
+        assertTrue(line.contains("\"causal_stale_frames_dropped\":1"));
+        assertTrue(line.contains("\"causal_outbound_frames_queued\":3"));
+        assertTrue(line.contains("\"causal_outbound_frames_pending\":0"));
+        assertTrue(line.contains("\"causal_outbound_bytes_pending\":0"));
+        assertTrue(line.contains("\"causal_outbound_queue_overflows\":1"));
+        assertTrue(line.contains(
+                "\"causal_outbound_frames_queued_by_queue\":[1, 0, 1, 1]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_frames_pending_by_queue\":[0, 0, 0, 0]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_bytes_pending_by_queue\":[0, 0, 0, 0]"
+        ));
+        assertTrue(line.contains(
+                "\"causal_outbound_queue_overflows_by_queue\":[0, 1, 0, 0]"
+        ));
+        assertTrue(line.contains("\"causal_future_frames_queued\":1"));
+        assertTrue(line.contains("\"causal_future_frames_pending\":0"));
+        assertTrue(line.contains("\"causal_atomic_bundles_outbound\":1"));
+        assertTrue(line.contains("\"causal_atomic_bundle_packets_inbound\":7"));
         assertTrue(line.contains("\"ack_repeated_packets\":1"));
         assertTrue(line.contains("\"ack_repeated_framesets\":3"));
         assertTrue(line.contains("\"ack_protection\":true"));
@@ -130,6 +200,12 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ack_repeat_delay_ns\":10000000"));
         assertTrue(line.contains("\"remote_ack_policy_supported\":false"));
         assertTrue(line.contains("\"remote_ordered_hol_probe_supported\":false"));
+        assertTrue(line.contains(
+                "\"remote_causal_scheduler_supported\":false"
+        ));
+        assertTrue(line.contains(
+                "\"remote_admission_diagnostics_supported\":false"
+        ));
         assertTrue(line.contains("\"application_limited\":false"));
         assertTrue(line.contains("\"backlog_state\":\"BULK\""));
         assertTrue(line.contains("\"backlog_age_ns\":150000000"));

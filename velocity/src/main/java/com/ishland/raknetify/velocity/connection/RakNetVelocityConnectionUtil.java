@@ -23,12 +23,14 @@ package com.ishland.raknetify.velocity.connection;
 import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.ByteBufCopyDecoder;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import com.ishland.raknetify.velocity.RaknetifyVelocityPlugin;
 import com.velocitypowered.api.event.connection.LoginEvent;
+import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
@@ -57,7 +59,9 @@ public class RakNetVelocityConnectionUtil {
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
             final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
             multiChannelCodec.addHandler((buf, suppressWarning) ->
-                    channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null ? 7 : 0
+                    channel.pipeline().get(ZstdCompresserCompatibilityHandler.ZSTD_ENCODER_NAME) != null
+                            ? RakNetSimpleMultiChannelCodec.OverrideResult.strict()
+                            : RakNetSimpleMultiChannelCodec.OverrideResult.pass()
             );
             channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
             channel.pipeline().addAfter(RakNetSimpleMultiChannelCodec.NAME, ZstdCompresserCompatibilityHandler.NAME, new ZstdCompresserCompatibilityHandler());
@@ -108,6 +112,14 @@ public class RakNetVelocityConnectionUtil {
             channel.pipeline().addBefore(Connections.HANDLER, RakNetVelocityPingUpdater.NAME, new RakNetVelocityPingUpdater(player));
 
             RaknetifyVelocityPlugin.LOGGER.info(String.format("Raknetify: %s logged in via RakNet, mtu %d", evt.getPlayer().getGameProfile().getName(), config.getMTU()));
+        }
+    }
+
+    public static void onServerSwitchStart(ServerConnectedEvent evt) {
+        final ConnectedPlayer player = (ConnectedPlayer) evt.getPlayer();
+        final Channel channel = player.getConnection().getChannel();
+        if (channel != null && channel.config() instanceof RakNet.Config) {
+            PreGatedTransitionScope.requestFence(channel);
         }
     }
 

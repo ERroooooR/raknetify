@@ -37,24 +37,38 @@ import net.minecraft.network.packet.s2c.common.CustomPayloadS2CPacket;
 @ChannelHandler.Sharable
 public class MultiChannellingPacketCapture extends ChannelOutboundHandlerAdapter {
 
-    private Class<?> packetClass = null;
+    private final ThreadLocal<Class<?>> packetClass = new ThreadLocal<>();
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        this.packetClass = msg.getClass();
+        final Class<?> previousPacketClass = this.packetClass.get();
+        this.packetClass.set(msg.getClass());
         try {
             ctx.write(msg, promise);
         } finally {
-            this.packetClass = null;
+            // Encoders and compatibility handlers may perform a nested write.
+            // Restoring the outer scope prevents the remainder of that write
+            // from being conservatively misclassified as an unknown packet.
+            // Thread-local state also keeps this sharable handler safe when
+            // several connection event loops encode at the same time.
+            if (previousPacketClass == null) {
+                this.packetClass.remove();
+            } else {
+                this.packetClass.set(previousPacketClass);
+            }
         }
     }
 
     public Class<?> getPacketClass() {
-        return this.packetClass;
+        return this.packetClass.get();
     }
 
     public void setPacketClass(Class<?> packetClass) {
-        this.packetClass = packetClass;
+        if (packetClass == null) {
+            this.packetClass.remove();
+        } else {
+            this.packetClass.set(packetClass);
+        }
     }
 
     public RakNetSimpleMultiChannelCodec.OverrideHandler getCaptureBasedHandler() {
@@ -62,14 +76,28 @@ public class MultiChannellingPacketCapture extends ChannelOutboundHandlerAdapter
     }
 
     public RakNetSimpleMultiChannelCodec.OverrideHandler getCustomPayloadHandler() {
-        return new CustomPayloadChannel.OverrideHandler(value -> packetClass == CustomPayloadS2CPacket.class || packetClass == CustomPayloadC2SPacket.class);
+        return new CustomPayloadChannel.OverrideHandler(value ->
+                getPacketClass() == CustomPayloadS2CPacket.class
+                        || getPacketClass() == CustomPayloadC2SPacket.class
+        );
     }
 
     private class CaptureBasedHandler implements RakNetSimpleMultiChannelCodec.OverrideHandler {
 
         @Override
-        public int getChannelOverride(ByteBuf buf, boolean suppressWarning) {
-            return RakNetMultiChannel.getPacketChannelOverride(packetClass, suppressWarning);
+        public RakNetSimpleMultiChannelCodec.OverrideResult getChannelOverride(ByteBuf buf, boolean suppressWarning) {
+            final Class<?> currentPacketClass = getPacketClass();
+            final int legacyChannel = RakNetMultiChannel.getPacketChannelOverride(
+                    currentPacketClass,
+                    suppressWarning
+            );
+            return RakNetSimpleMultiChannelCodec.OverrideResult.classify(
+                    RakNetMultiChannel.getPacketDependencyDomain(
+                            currentPacketClass,
+                            suppressWarning
+                    ),
+                    legacyChannel
+            );
         }
 
     }

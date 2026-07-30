@@ -28,6 +28,7 @@ import com.google.common.base.Preconditions;
 import com.ishland.raknetify.bungee.RaknetifyBungeePlugin;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
 import com.ishland.raknetify.common.connection.MultiChannellingEncryption;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
 import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import io.netty.channel.ChannelDuplexHandler;
@@ -98,11 +99,19 @@ public class RakNetBungeeClientChannelEventListener extends ChannelDuplexHandler
                 return;
             }
         } else if (msg instanceof Respawn || msg instanceof Login || msg instanceof StartConfiguration || msg instanceof FinishConfiguration) {
-            ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT); // sync
+            // ServerConnectedEvent runs synchronously before Bungee emits its
+            // switch reset sequence. That path already inserted one fence for
+            // the complete sequence, so do not turn each synthetic
+            // Login/Respawn/configuration packet into another gameplay epoch.
+            if (!PreGatedTransitionScope.isActive(ctx.channel())) {
+                ctx.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+            }
             super.write(ctx, msg, promise);
             return;
         } else if (msg instanceof Commands) {
-            ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
+            if (PreGatedTransitionScope.complete(ctx.channel()) == 0) {
+                ctx.write(RakNetSimpleMultiChannelCodec.SIGNAL_START_MULTICHANNEL);
+            }
             super.write(ctx, msg, promise);
             return;
         }

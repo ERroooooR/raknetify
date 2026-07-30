@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import com.ishland.raknetify.common.util.MathUtil;
 import network.ycc.raknet.RakNet;
 import org.apache.commons.math3.stat.descriptive.DescriptiveStatistics;
@@ -103,6 +104,57 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long applicationBatches = 0L;
     private volatile long applicationBatchBytes = 0L;
     private volatile long applicationBatchMaxBytes = 0L;
+    private final long[] dependencyDomainQueuedFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainQueuedBytes =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainSentFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainSentBytes =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainPendingFrames =
+            new long[DependencyDomain.values().length];
+    private final long[] dependencyDomainPendingBytes =
+            new long[DependencyDomain.values().length];
+    private volatile long causalFencesStarted;
+    private volatile long causalFencesCompleted;
+    private volatile long causalFencesFailed;
+    private volatile long causalInboundFencesCompleted;
+    private volatile int causalOutboundEpoch;
+    private volatile int causalInboundEpoch;
+    private volatile long causalStaleFramesDropped;
+    private volatile long causalOutboundFramesQueued;
+    private volatile int causalOutboundFramesPending;
+    private volatile long causalOutboundBytesPending;
+    private volatile long causalOutboundQueueOverflows;
+    private final long[] causalOutboundFramesQueuedByQueue =
+            new long[CausalOutboundQueue.values().length];
+    private final int[] causalOutboundFramesPendingByQueue =
+            new int[CausalOutboundQueue.values().length];
+    private final long[] causalOutboundBytesPendingByQueue =
+            new long[CausalOutboundQueue.values().length];
+    private final long[] causalOutboundQueueOverflowsByQueue =
+            new long[CausalOutboundQueue.values().length];
+    private volatile long causalFutureFramesQueued;
+    private volatile int causalFutureFramesPending;
+    private volatile long causalFutureBytesPending;
+    private volatile long causalAtomicBundlesOutbound;
+    private volatile long causalAtomicBundlePacketsOutbound;
+    private volatile long causalAtomicBundleBytesOutbound;
+    private volatile long causalAtomicBundleMaxBytesOutbound;
+    private volatile long causalAtomicBundlesInbound;
+    private volatile long causalAtomicBundlePacketsInbound;
+    private volatile long causalAtomicBundleBytesInbound;
+    private volatile long causalAtomicBundleMaxBytesInbound;
+    private volatile long causalBulkFramesOutbound;
+    private volatile long causalBulkBytesOutbound;
+    private volatile long causalBulkFramesInbound;
+    private volatile long causalBulkBytesInbound;
+    private volatile long causalStrictFramesBlocked;
+    private volatile long causalStrictFramesReleased;
+    private volatile int causalStrictFramesPending;
+    private volatile long causalStrictBytesPending;
+    private volatile long causalStrictMaxWaitNanos;
     private volatile long ackRepeatedPackets = 0L;
     private volatile long ackRepeatedFrameSets = 0L;
     private volatile long framesError = 0L;
@@ -122,6 +174,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile int currentQueuedBytes = 0;
     private volatile double adaptivePacingRate;
     private volatile long adaptiveBytePacingRate;
+    private volatile long adaptiveBytePacingTarget;
+    private volatile double adaptiveBurstFloorPps;
+    private volatile boolean adaptiveRttPressure;
     private volatile boolean adaptiveAckProtection;
     private volatile long adaptiveAckFlushDelayNanos;
     private volatile long adaptiveAckRepeatDelayNanos;
@@ -376,6 +431,229 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
         applicationBatchMaxBytes = Math.max(applicationBatchMaxBytes, bytes);
     }
 
+    public synchronized void dependencyDomainQueued(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainQueuedFrames[index]++;
+        dependencyDomainQueuedBytes[index] += bytes;
+        dependencyDomainPendingFrames[index]++;
+        dependencyDomainPendingBytes[index] += bytes;
+        causalOutboundFrameQueuedLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
+        );
+    }
+
+    public synchronized void dependencyDomainSent(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainSentFrames[index]++;
+        dependencyDomainSentBytes[index] += bytes;
+        dependencyDomainPendingFrames[index] = Math.max(
+                0,
+                dependencyDomainPendingFrames[index] - 1
+        );
+        dependencyDomainPendingBytes[index] = Math.max(
+                0,
+                dependencyDomainPendingBytes[index] - bytes
+        );
+        causalOutboundQueueStateLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
+        );
+    }
+
+    public synchronized void dependencyDomainDiscarded(
+            DependencyDomain domain,
+            int bytes
+    ) {
+        final int index = domain.ordinal();
+        dependencyDomainPendingFrames[index] = Math.max(
+                0,
+                dependencyDomainPendingFrames[index] - 1
+        );
+        dependencyDomainPendingBytes[index] = Math.max(
+                0,
+                dependencyDomainPendingBytes[index] - bytes
+        );
+        causalOutboundQueueStateLocked(
+                CausalOutboundQueue.DOMAIN_SCHEDULER,
+                dependencyDomainPendingFramesTotal(),
+                dependencyDomainPendingBytesTotal()
+        );
+    }
+
+    public void causalFenceStarted(int epoch) {
+        causalFencesStarted++;
+        causalOutboundEpoch = Math.max(causalOutboundEpoch, epoch - 1);
+    }
+
+    public void causalFenceCompleted(int epoch) {
+        causalFencesCompleted++;
+        causalOutboundEpoch = epoch;
+    }
+
+    public void causalFenceFailed() {
+        causalFencesFailed++;
+    }
+
+    public void causalInboundFenceCompleted(int epoch) {
+        causalInboundFencesCompleted++;
+        causalInboundEpoch = epoch;
+    }
+
+    public void causalStaleFrameDropped() {
+        causalStaleFramesDropped++;
+    }
+
+    public synchronized void causalOutboundFrameQueued(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundFrameQueuedLocked(queue, framesPending, bytesPending);
+    }
+
+    private void causalOutboundFrameQueuedLocked(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundFramesQueued++;
+        causalOutboundFramesQueuedByQueue[queue.ordinal()]++;
+        causalOutboundQueueStateLocked(queue, framesPending, bytesPending);
+    }
+
+    public synchronized void causalOutboundQueueState(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundQueueStateLocked(queue, framesPending, bytesPending);
+    }
+
+    private void causalOutboundQueueStateLocked(
+            CausalOutboundQueue queue,
+            int framesPending,
+            long bytesPending
+    ) {
+        causalOutboundFramesPendingByQueue[queue.ordinal()] =
+                Math.max(0, framesPending);
+        causalOutboundBytesPendingByQueue[queue.ordinal()] =
+                Math.max(0L, bytesPending);
+        int totalFrames = 0;
+        long totalBytes = 0L;
+        for (int value : causalOutboundFramesPendingByQueue) {
+            totalFrames += value;
+        }
+        for (long value : causalOutboundBytesPendingByQueue) {
+            totalBytes += value;
+        }
+        causalOutboundFramesPending = totalFrames;
+        causalOutboundBytesPending = totalBytes;
+    }
+
+    private int dependencyDomainPendingFramesTotal() {
+        long total = 0L;
+        for (long value : dependencyDomainPendingFrames) {
+            total += value;
+        }
+        return (int) Math.min(Integer.MAX_VALUE, total);
+    }
+
+    private long dependencyDomainPendingBytesTotal() {
+        long total = 0L;
+        for (long value : dependencyDomainPendingBytes) {
+            total += value;
+        }
+        return total;
+    }
+
+    public synchronized void causalOutboundQueueOverflow(
+            CausalOutboundQueue queue
+    ) {
+        causalOutboundQueueOverflows++;
+        causalOutboundQueueOverflowsByQueue[queue.ordinal()]++;
+    }
+
+    public void causalFutureFrameQueued(int framesPending, long bytesPending) {
+        causalFutureFramesQueued++;
+        causalFutureFramesPending = Math.max(0, framesPending);
+        causalFutureBytesPending = Math.max(0L, bytesPending);
+    }
+
+    public void causalFutureQueueState(int framesPending, long bytesPending) {
+        causalFutureFramesPending = Math.max(0, framesPending);
+        causalFutureBytesPending = Math.max(0L, bytesPending);
+    }
+
+    public void causalAtomicBundleOutbound(int packets) {
+        causalAtomicBundleOutbound(packets, 0);
+    }
+
+    public void causalAtomicBundleOutbound(int packets, int bytes) {
+        causalAtomicBundlesOutbound++;
+        causalAtomicBundlePacketsOutbound += packets;
+        causalAtomicBundleBytesOutbound += Math.max(0, bytes);
+        causalAtomicBundleMaxBytesOutbound = Math.max(
+                causalAtomicBundleMaxBytesOutbound,
+                bytes
+        );
+    }
+
+    public void causalAtomicBundleInbound(int packets) {
+        causalAtomicBundleInbound(packets, 0);
+    }
+
+    public void causalAtomicBundleInbound(int packets, int bytes) {
+        causalAtomicBundlesInbound++;
+        causalAtomicBundlePacketsInbound += packets;
+        causalAtomicBundleBytesInbound += Math.max(0, bytes);
+        causalAtomicBundleMaxBytesInbound = Math.max(
+                causalAtomicBundleMaxBytesInbound,
+                bytes
+        );
+    }
+
+    public void causalBulkFrameOutbound(int bytes) {
+        causalBulkFramesOutbound++;
+        causalBulkBytesOutbound += Math.max(0, bytes);
+    }
+
+    public void causalBulkFrameInbound(int bytes) {
+        causalBulkFramesInbound++;
+        causalBulkBytesInbound += Math.max(0, bytes);
+    }
+
+    public void causalStrictFrameBlocked(int framesPending, long bytesPending) {
+        causalStrictFramesBlocked++;
+        causalStrictQueueState(framesPending, bytesPending);
+    }
+
+    public void causalStrictFrameReleased(
+            int framesPending,
+            long bytesPending,
+            long waitNanos
+    ) {
+        causalStrictFramesReleased++;
+        causalStrictMaxWaitNanos = Math.max(
+                causalStrictMaxWaitNanos,
+                waitNanos
+        );
+        causalStrictQueueState(framesPending, bytesPending);
+    }
+
+    public void causalStrictQueueState(int framesPending, long bytesPending) {
+        causalStrictFramesPending = Math.max(0, framesPending);
+        causalStrictBytesPending = Math.max(0L, bytesPending);
+    }
+
     @Override
     public void ackRepeated(int acknowledgedFrameSets) {
         ackRepeatedPackets++;
@@ -459,6 +737,17 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void adaptiveBytePacingRate(long bytesPerSecond) { adaptiveBytePacingRate = bytesPerSecond; }
+
+    @Override
+    public void adaptiveAdmissionDiagnostics(
+            long targetBytesPerSecond,
+            double burstFloorPacketsPerSecond,
+            boolean rttPressureActive
+    ) {
+        adaptiveBytePacingTarget = Math.max(0L, targetBytesPerSecond);
+        adaptiveBurstFloorPps = Math.max(0D, burstFloorPacketsPerSecond);
+        adaptiveRttPressure = rttPressureActive;
+    }
 
     @Override
     public void adaptiveAckPolicy(boolean protectedMode, long flushDelayNanos, long repeatDelayNanos) {
@@ -704,6 +993,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     public double getAdaptivePacingRate() { return adaptivePacingRate; }
     public long getAdaptiveBytePacingRate() { return adaptiveBytePacingRate; }
+    public long getAdaptiveBytePacingTarget() {
+        return adaptiveBytePacingTarget;
+    }
+    public double getAdaptiveBurstFloorPps() {
+        return adaptiveBurstFloorPps;
+    }
+    public boolean isAdaptiveRttPressure() {
+        return adaptiveRttPressure;
+    }
     public long getAdaptiveDeliveryRate() { return adaptiveDeliveryRate; }
     public double getAdaptiveLossRatio() { return adaptiveLossRatio; }
     public long getAdaptiveAcknowledged() { return adaptiveAcknowledged; }
@@ -794,6 +1092,91 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getApplicationBatches() { return applicationBatches; }
     public long getApplicationBatchBytes() { return applicationBatchBytes; }
     public long getApplicationBatchMaxBytes() { return applicationBatchMaxBytes; }
+    public synchronized long[] getDependencyDomainQueuedFrames() {
+        return Arrays.copyOf(dependencyDomainQueuedFrames, dependencyDomainQueuedFrames.length);
+    }
+    public synchronized long[] getDependencyDomainQueuedBytes() {
+        return Arrays.copyOf(dependencyDomainQueuedBytes, dependencyDomainQueuedBytes.length);
+    }
+    public synchronized long[] getDependencyDomainSentFrames() {
+        return Arrays.copyOf(dependencyDomainSentFrames, dependencyDomainSentFrames.length);
+    }
+    public synchronized long[] getDependencyDomainSentBytes() {
+        return Arrays.copyOf(dependencyDomainSentBytes, dependencyDomainSentBytes.length);
+    }
+    public synchronized long[] getDependencyDomainPendingFrames() {
+        return Arrays.copyOf(dependencyDomainPendingFrames, dependencyDomainPendingFrames.length);
+    }
+    public synchronized long[] getDependencyDomainPendingBytes() {
+        return Arrays.copyOf(dependencyDomainPendingBytes, dependencyDomainPendingBytes.length);
+    }
+    public long getCausalFencesStarted() { return causalFencesStarted; }
+    public long getCausalFencesCompleted() { return causalFencesCompleted; }
+    public long getCausalFencesFailed() { return causalFencesFailed; }
+    public long getCausalInboundFencesCompleted() { return causalInboundFencesCompleted; }
+    public int getCausalOutboundEpoch() { return causalOutboundEpoch; }
+    public int getCausalInboundEpoch() { return causalInboundEpoch; }
+    public long getCausalStaleFramesDropped() { return causalStaleFramesDropped; }
+    public long getCausalOutboundFramesQueued() { return causalOutboundFramesQueued; }
+    public int getCausalOutboundFramesPending() { return causalOutboundFramesPending; }
+    public long getCausalOutboundBytesPending() { return causalOutboundBytesPending; }
+    public long getCausalOutboundQueueOverflows() { return causalOutboundQueueOverflows; }
+    public synchronized long[] getCausalOutboundFramesQueuedByQueue() {
+        return causalOutboundFramesQueuedByQueue.clone();
+    }
+    public synchronized int[] getCausalOutboundFramesPendingByQueue() {
+        return causalOutboundFramesPendingByQueue.clone();
+    }
+    public synchronized long[] getCausalOutboundBytesPendingByQueue() {
+        return causalOutboundBytesPendingByQueue.clone();
+    }
+    public synchronized long[] getCausalOutboundQueueOverflowsByQueue() {
+        return causalOutboundQueueOverflowsByQueue.clone();
+    }
+    private synchronized CausalOutboundQueueSnapshot causalOutboundQueueSnapshot() {
+        return new CausalOutboundQueueSnapshot(
+                causalOutboundFramesQueued,
+                causalOutboundFramesPending,
+                causalOutboundBytesPending,
+                causalOutboundQueueOverflows,
+                causalOutboundFramesQueuedByQueue.clone(),
+                causalOutboundFramesPendingByQueue.clone(),
+                causalOutboundBytesPendingByQueue.clone(),
+                causalOutboundQueueOverflowsByQueue.clone()
+        );
+    }
+    public long getCausalFutureFramesQueued() { return causalFutureFramesQueued; }
+    public int getCausalFutureFramesPending() { return causalFutureFramesPending; }
+    public long getCausalFutureBytesPending() { return causalFutureBytesPending; }
+    public long getCausalAtomicBundlesOutbound() { return causalAtomicBundlesOutbound; }
+    public long getCausalAtomicBundlePacketsOutbound() {
+        return causalAtomicBundlePacketsOutbound;
+    }
+    public long getCausalAtomicBundleBytesOutbound() {
+        return causalAtomicBundleBytesOutbound;
+    }
+    public long getCausalAtomicBundleMaxBytesOutbound() {
+        return causalAtomicBundleMaxBytesOutbound;
+    }
+    public long getCausalAtomicBundlesInbound() { return causalAtomicBundlesInbound; }
+    public long getCausalAtomicBundlePacketsInbound() {
+        return causalAtomicBundlePacketsInbound;
+    }
+    public long getCausalAtomicBundleBytesInbound() {
+        return causalAtomicBundleBytesInbound;
+    }
+    public long getCausalAtomicBundleMaxBytesInbound() {
+        return causalAtomicBundleMaxBytesInbound;
+    }
+    public long getCausalBulkFramesOutbound() { return causalBulkFramesOutbound; }
+    public long getCausalBulkBytesOutbound() { return causalBulkBytesOutbound; }
+    public long getCausalBulkFramesInbound() { return causalBulkFramesInbound; }
+    public long getCausalBulkBytesInbound() { return causalBulkBytesInbound; }
+    public long getCausalStrictFramesBlocked() { return causalStrictFramesBlocked; }
+    public long getCausalStrictFramesReleased() { return causalStrictFramesReleased; }
+    public int getCausalStrictFramesPending() { return causalStrictFramesPending; }
+    public long getCausalStrictBytesPending() { return causalStrictBytesPending; }
+    public long getCausalStrictMaxWaitNanos() { return causalStrictMaxWaitNanos; }
     public long getAckRepeatedPackets() { return ackRepeatedPackets; }
     public long getAckRepeatedFrameSets() { return ackRepeatedFrameSets; }
     public boolean isAdaptiveAckProtection() { return adaptiveAckProtection; }
@@ -827,6 +1210,8 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     String formatMetricsJsonl(long timestamp) {
+        final CausalOutboundQueueSnapshot causalQueues =
+                causalOutboundQueueSnapshot();
         return String.format(Locale.ROOT,
                 "{\"timestamp\":%d,\"connection\":\"%08x\",\"rtt_ns\":%d,\"rtt_stddev_ns\":%d," +
                         "\"rx_pps\":%d,\"tx_pps\":%d,\"rx_bps\":%d,\"tx_bps\":%d,\"queued_bytes\":%d," +
@@ -859,13 +1244,48 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"ordered_channel_max_wait_ns\":%s," +
                         "\"application_batches\":%d,\"application_batch_bytes\":%d," +
                         "\"application_batch_max_bytes\":%d," +
-                        "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
+                        "\"dependency_domain_names\":[\"STRICT_WORLD\",\"INDEPENDENT_CONTROL\",\"EPHEMERAL_EFFECT\",\"GUARDED_BULK\"]," +
+                        "\"dependency_domain_queued_frames\":%s,\"dependency_domain_queued_bytes\":%s," +
+                        "\"dependency_domain_sent_frames\":%s,\"dependency_domain_sent_bytes\":%s," +
+                        "\"dependency_domain_pending_frames\":%s,\"dependency_domain_pending_bytes\":%s," +
+                        "\"causal_fences_started\":%d,\"causal_fences_completed\":%d," +
+                        "\"causal_fences_failed\":%d,\"causal_inbound_fences_completed\":%d," +
+                        "\"causal_outbound_epoch\":%d,\"causal_inbound_epoch\":%d," +
+                        "\"causal_stale_frames_dropped\":%d," +
+                        "\"causal_outbound_frames_queued\":%d," +
+                        "\"causal_outbound_frames_pending\":%d," +
+                        "\"causal_outbound_bytes_pending\":%d," +
+                        "\"causal_outbound_queue_overflows\":%d," +
+                        "\"causal_outbound_queue_names\":[\"APPLICATION\",\"BUNDLE_CONTROL\",\"FENCE\",\"DOMAIN_SCHEDULER\"]," +
+                        "\"causal_outbound_frames_queued_by_queue\":%s," +
+                        "\"causal_outbound_frames_pending_by_queue\":%s," +
+                        "\"causal_outbound_bytes_pending_by_queue\":%s," +
+                        "\"causal_outbound_queue_overflows_by_queue\":%s," +
+                        "\"causal_future_frames_queued\":%d," +
+                        "\"causal_future_frames_pending\":%d,\"causal_future_bytes_pending\":%d," +
+                         "\"causal_atomic_bundles_outbound\":%d," +
+                         "\"causal_atomic_bundle_packets_outbound\":%d," +
+                         "\"causal_atomic_bundle_bytes_outbound\":%d," +
+                         "\"causal_atomic_bundle_max_bytes_outbound\":%d," +
+                         "\"causal_atomic_bundles_inbound\":%d," +
+                         "\"causal_atomic_bundle_packets_inbound\":%d," +
+                         "\"causal_atomic_bundle_bytes_inbound\":%d," +
+                         "\"causal_atomic_bundle_max_bytes_inbound\":%d," +
+                         "\"causal_bulk_frames_outbound\":%d,\"causal_bulk_bytes_outbound\":%d," +
+                         "\"causal_bulk_frames_inbound\":%d,\"causal_bulk_bytes_inbound\":%d," +
+                         "\"causal_strict_frames_blocked\":%d,\"causal_strict_frames_released\":%d," +
+                         "\"causal_strict_frames_pending\":%d,\"causal_strict_bytes_pending\":%d," +
+                         "\"causal_strict_max_wait_ns\":%d," +
+                         "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
                         "\"ack_protection\":%s,\"ack_flush_delay_ns\":%d,\"ack_repeat_delay_ns\":%d," +
                         "\"application_limited\":%s,\"backlog_state\":\"%s\"," +
                         "\"backlog_age_ns\":%d,\"backlog_probes\":%d," +
                         "\"validated_path_bps\":%d,\"delivery_sample_application_limited\":%s," +
                         "\"resume_state\":\"%s\",\"resume_validated_rounds\":%d," +
-                        "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
+                        "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d," +
+                        "\"byte_pacing_target_bps\":%d,\"burst_floor_pps\":%.3f," +
+                        "\"rtt_pressure_active\":%s," +
+                        "\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
                         "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
@@ -934,10 +1354,22 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_ordered_channel_max_wait_ns\":%s," +
                         "\"remote_ordered_hol_probe_supported\":%s," +
                         "\"remote_ordered_hol_probes\":%d," +
-                        "\"remote_ordered_hol_probe_bytes\":%d," +
-                        "\"remote_ordered_hol_probe_acked_bytes\":%d," +
-                        "\"remote_ordered_hol_probe_channel\":%d," +
-                        "\"remote_congestion_reason\":\"%s\"," +
+                         "\"remote_ordered_hol_probe_bytes\":%d," +
+                         "\"remote_ordered_hol_probe_acked_bytes\":%d," +
+                         "\"remote_ordered_hol_probe_channel\":%d," +
+                         "\"remote_causal_scheduler_supported\":%s," +
+                         "\"remote_dependency_domain_pending_frames\":%s," +
+                         "\"remote_dependency_domain_pending_bytes\":%s," +
+                         "\"remote_causal_bulk_frames_outbound\":%d," +
+                         "\"remote_causal_bulk_bytes_outbound\":%d," +
+                         "\"remote_causal_atomic_bundle_max_bytes_outbound\":%d," +
+                         "\"remote_admission_diagnostics_supported\":%s," +
+                         "\"remote_byte_pacing_target_bps\":%d," +
+                         "\"remote_burst_floor_pps\":%.3f," +
+                         "\"remote_rtt_pressure_active\":%s," +
+                         "\"remote_resume_state\":\"%s\"," +
+                         "\"remote_resume_validated_rounds\":%d," +
+                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
                         "\"export_dropped\":%d}%n",
@@ -962,11 +1394,40 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(orderedChannelBlockedOrderIndex),
                 Arrays.toString(orderedChannelReleasedFrames), Arrays.toString(orderedChannelMaxWaitNanos),
                 applicationBatches, applicationBatchBytes, applicationBatchMaxBytes,
-                ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
+                Arrays.toString(getDependencyDomainQueuedFrames()),
+                Arrays.toString(getDependencyDomainQueuedBytes()),
+                Arrays.toString(getDependencyDomainSentFrames()),
+                Arrays.toString(getDependencyDomainSentBytes()),
+                Arrays.toString(getDependencyDomainPendingFrames()),
+                Arrays.toString(getDependencyDomainPendingBytes()),
+                causalFencesStarted, causalFencesCompleted, causalFencesFailed,
+                causalInboundFencesCompleted, causalOutboundEpoch, causalInboundEpoch,
+                causalStaleFramesDropped, causalQueues.framesQueued(),
+                causalQueues.framesPending(), causalQueues.bytesPending(),
+                causalQueues.queueOverflows(),
+                Arrays.toString(causalQueues.framesQueuedByQueue()),
+                Arrays.toString(causalQueues.framesPendingByQueue()),
+                Arrays.toString(causalQueues.bytesPendingByQueue()),
+                Arrays.toString(causalQueues.queueOverflowsByQueue()),
+                causalFutureFramesQueued,
+                 causalFutureFramesPending, causalFutureBytesPending,
+                 causalAtomicBundlesOutbound, causalAtomicBundlePacketsOutbound,
+                 causalAtomicBundleBytesOutbound, causalAtomicBundleMaxBytesOutbound,
+                 causalAtomicBundlesInbound, causalAtomicBundlePacketsInbound,
+                 causalAtomicBundleBytesInbound, causalAtomicBundleMaxBytesInbound,
+                 causalBulkFramesOutbound, causalBulkBytesOutbound,
+                 causalBulkFramesInbound, causalBulkBytesInbound,
+                 causalStrictFramesBlocked, causalStrictFramesReleased,
+                 causalStrictFramesPending, causalStrictBytesPending,
+                 causalStrictMaxWaitNanos,
+                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
                 applicationLimited, backlogState, backlogAgeNanos, backlogProbes,
                 validatedPathRate, deliverySampleApplicationLimited, resumeState, resumeValidatedRounds,
-                adaptivePacingRate, adaptiveBytePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
+                adaptivePacingRate, adaptiveBytePacingRate,
+                adaptiveBytePacingTarget, adaptiveBurstFloorPps,
+                adaptiveRttPressure,
+                adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
@@ -1010,9 +1471,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(remoteOrderedChannelBlockedOrderIndex()),
                 Arrays.toString(remoteOrderedChannelReleasedFrames()),
                 Arrays.toString(remoteOrderedChannelMaxWaitNanos()),
-                isRemoteOrderedHolProbeSupported(), remoteOrderedHolProbes(),
-                remoteOrderedHolProbeBytes(), remoteOrderedHolProbeAckedBytes(), remoteOrderedHolProbeChannel(),
-                remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
+                 isRemoteOrderedHolProbeSupported(), remoteOrderedHolProbes(),
+                 remoteOrderedHolProbeBytes(), remoteOrderedHolProbeAckedBytes(), remoteOrderedHolProbeChannel(),
+                 isRemoteCausalSchedulerSupported(),
+                 Arrays.toString(remoteDependencyDomainPendingFrames()),
+                 Arrays.toString(remoteDependencyDomainPendingBytes()),
+                 remoteCausalBulkFramesOutbound(), remoteCausalBulkBytesOutbound(),
+                 remoteCausalAtomicBundleMaxBytesOutbound(),
+                 isRemoteAdmissionDiagnosticsSupported(),
+                 remoteBytePacingTarget(), remoteBurstFloorPps(),
+                 remoteRttPressureActive(), remoteResumeState(),
+                 remoteResumeValidatedRounds(),
+                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
 
@@ -1140,6 +1610,68 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             ? metricsSynchronizationHandler.getOrderedHolProbeAckedBytes() : 0L; }
     private int remoteOrderedHolProbeChannel() { return isRemoteOrderedHolProbeSupported()
             ? metricsSynchronizationHandler.getOrderedHolProbeChannel() : -1; }
+    private boolean isRemoteCausalSchedulerSupported() {
+        return metricsSynchronizationHandler != null
+                && metricsSynchronizationHandler
+                .isRemoteCausalSchedulerSupported();
+    }
+    private int[] remoteDependencyDomainPendingFrames() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getDependencyDomainPendingFrames()
+                : new int[DependencyDomain.values().length];
+    }
+    private long[] remoteDependencyDomainPendingBytes() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getDependencyDomainPendingBytes()
+                : new long[DependencyDomain.values().length];
+    }
+    private long remoteCausalBulkFramesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler.getCausalBulkFramesOutbound()
+                : 0L;
+    }
+    private long remoteCausalBulkBytesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler.getCausalBulkBytesOutbound()
+                : 0L;
+    }
+    private long remoteCausalAtomicBundleMaxBytesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getCausalAtomicBundleMaxBytesOutbound()
+                : 0L;
+    }
+    private boolean isRemoteAdmissionDiagnosticsSupported() {
+        return metricsSynchronizationHandler != null
+                && metricsSynchronizationHandler
+                .isRemoteAdmissionDiagnosticsSupported();
+    }
+    private long remoteBytePacingTarget() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getBytePacingTarget()
+                : 0L;
+    }
+    private double remoteBurstFloorPps() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getBurstFloorPps()
+                : 0D;
+    }
+    private boolean remoteRttPressureActive() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                && metricsSynchronizationHandler.isRttPressureActive();
+    }
+    private String remoteResumeState() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getResumeState()
+                : "IDLE";
+    }
+    private int remoteResumeValidatedRounds() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getResumeValidatedRounds()
+                : 0;
+    }
     private long remoteRackRetransmitBytes() { return isRemoteAdvancedRecoverySupported()
             ? metricsSynchronizationHandler.getRackRetransmitBytes() : 0L; }
     private long remoteRackRetransmitFrameSets() { return isRemoteAdvancedRecoverySupported()
@@ -1223,6 +1755,25 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     // ========== Misc ==========
+
+    public enum CausalOutboundQueue {
+        APPLICATION,
+        BUNDLE_CONTROL,
+        FENCE,
+        DOMAIN_SCHEDULER
+    }
+
+    private record CausalOutboundQueueSnapshot(
+            long framesQueued,
+            int framesPending,
+            long bytesPending,
+            long queueOverflows,
+            long[] framesQueuedByQueue,
+            int[] framesPendingByQueue,
+            long[] bytesPendingByQueue,
+            long[] queueOverflowsByQueue
+    ) {
+    }
 
     private MetricsSynchronizationHandler metricsSynchronizationHandler;
 

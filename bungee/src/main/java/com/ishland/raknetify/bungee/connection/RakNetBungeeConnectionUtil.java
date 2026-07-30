@@ -27,9 +27,9 @@ package com.ishland.raknetify.bungee.connection;
 import com.ishland.raknetify.bungee.RaknetifyBungeePlugin;
 import com.ishland.raknetify.common.Constants;
 import com.ishland.raknetify.common.connection.MultiChannelingStreamingCompression;
+import com.ishland.raknetify.common.connection.PreGatedTransitionScope;
 import com.ishland.raknetify.common.connection.RakNetConnectionUtil;
 import com.ishland.raknetify.common.connection.RakNetSimpleMultiChannelCodec;
-import com.ishland.raknetify.common.connection.SynchronizationLayer;
 import com.ishland.raknetify.common.connection.multichannel.CustomPayloadChannel;
 import com.ishland.raknetify.common.data.ProtocolMultiChannelMappings;
 import io.netty.channel.Channel;
@@ -73,7 +73,8 @@ public class RakNetBungeeConnectionUtil {
         if (channel.config() instanceof RakNet.Config) {
             RakNetConnectionUtil.initChannel(channel);
 //            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, MultiChannellingDataCodec.NAME, new MultiChannellingDataCodec(Constants.RAKNET_GAME_PACKET_ID));
-            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID));
+            final RakNetSimpleMultiChannelCodec multiChannelCodec = new RakNetSimpleMultiChannelCodec(Constants.RAKNET_GAME_PACKET_ID);
+            channel.pipeline().addAfter(MultiChannelingStreamingCompression.NAME, RakNetSimpleMultiChannelCodec.NAME, multiChannelCodec);
         }
     }
 
@@ -142,7 +143,7 @@ public class RakNetBungeeConnectionUtil {
 
             if (playerChannel != null && playerChannel.config() instanceof RakNet.Config config) {
                 // this exists because bungeecord sends several packets to reset state before Respawn packet during server switch
-                playerChannel.write(SynchronizationLayer.SYNC_REQUEST_OBJECT);
+                PreGatedTransitionScope.requestFence(playerChannel);
 
                 // and inject into the server channel
                 final ServerConnection server = (ServerConnection) evt.getServer();
