@@ -346,7 +346,11 @@ class CausalMultichannelFaultInjectionTest {
                         .map(FrameData::getPacketId)
                         .toList()
         );
-        assertTrue(applicationChannels.contains(7));
+        assertTrue(
+                applicationChannels.contains(6)
+                        || applicationChannels.contains(7),
+                context + " expected strict or guarded-bulk application data"
+        );
         assertTrue(applicationChannels.contains(1));
         assertTrue(applicationChannels.contains(4));
     }

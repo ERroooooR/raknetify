@@ -24,6 +24,7 @@
 
 package com.ishland.raknetify.common.connection;
 
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Test;
@@ -40,6 +41,13 @@ class MetricsSynchronizationHandlerTest {
         sender.currentQueuedBytes(1234);
         sender.adaptivePacingRate(37.5D);
         sender.adaptiveBytePacingRate(524288L);
+        sender.adaptiveAdmissionDiagnostics(786432L, 250D, true);
+        sender.adaptivePathModel(
+                65536L,
+                false,
+                "CALIBRATING",
+                1
+        );
         sender.adaptiveDeliveryRate(45678L);
         sender.adaptiveLoss(0.125D, 70L, 10L);
         sender.adaptiveLossType("RATE_LIMIT");
@@ -67,7 +75,7 @@ class MetricsSynchronizationHandlerTest {
         sender.fecParity(7, 8192);
         sender.fecExpired(2);
         sender.fecBudget(10, 1, 0.25D);
-        sender.congestionDiagnostics("NON_CONGESTIVE_HIGH_LOSS", 1.2D, true, true);
+        sender.congestionDiagnostics("RTT_INFLATION", 1.2D, true, true);
         sender.rackRetransmit(2048);
         sender.rackSpuriousAck(2);
         sender.ptoProbe(512);
@@ -82,11 +90,17 @@ class MetricsSynchronizationHandlerTest {
         sender.targetedFecRecovered(1);
         sender.orderedChannelPending(3, 4, 110_000_000L, 27);
         sender.orderedChannelRelease(3, 5, 120_000_000L);
+        sender.dependencyDomainQueued(
+                DependencyDomain.GUARDED_BULK,
+                12345
+        );
+        sender.causalBulkFrameOutbound(8192);
+        sender.causalAtomicBundleOutbound(5, 65536);
 
         final ByteBuf payload = Unpooled.buffer();
         try {
             MetricsSynchronizationHandler.writePayload(payload, sender, 8, 12345L);
-            assertEquals(801, payload.readableBytes());
+            assertEquals(895, payload.readableBytes());
 
             final MetricsSynchronizationHandler receiver = new MetricsSynchronizationHandler();
             assertTrue(receiver.readPayload(payload));
@@ -95,7 +109,7 @@ class MetricsSynchronizationHandlerTest {
             assertEquals(1234, receiver.getQueuedBytes());
             assertEquals("RATE_LIMIT", receiver.getLossType());
             assertEquals("DRAIN", receiver.getCongestionMode());
-            assertEquals("NON_CONGESTIVE_HIGH_LOSS", receiver.getCongestionReason());
+            assertEquals("RTT_INFLATION", receiver.getCongestionReason());
             assertEquals(37.5D, receiver.getPacingRate());
             assertEquals(7L, receiver.getReliableFrameDuplicates());
             assertTrue(receiver.isRemoteRecoverySupported());
@@ -174,6 +188,81 @@ class MetricsSynchronizationHandlerTest {
             assertEquals(600L, receiver.getOrderedHolProbeBytes());
             assertEquals(600L, receiver.getOrderedHolProbeAckedBytes());
             assertEquals(7, receiver.getOrderedHolProbeChannel());
+            assertTrue(receiver.isRemoteCausalSchedulerSupported());
+            assertEquals(
+                    1,
+                    receiver.getDependencyDomainPendingFrames()[
+                            DependencyDomain.GUARDED_BULK.ordinal()
+                    ]
+            );
+            assertEquals(
+                    12345L,
+                    receiver.getDependencyDomainPendingBytes()[
+                            DependencyDomain.GUARDED_BULK.ordinal()
+                    ]
+            );
+            assertEquals(1L, receiver.getCausalBulkFramesOutbound());
+            assertEquals(8192L, receiver.getCausalBulkBytesOutbound());
+            assertEquals(
+                    65536L,
+                    receiver.getCausalAtomicBundleMaxBytesOutbound()
+            );
+            assertTrue(receiver.isRemoteAdmissionDiagnosticsSupported());
+            assertEquals(786432L, receiver.getBytePacingTarget());
+            assertEquals(250D, receiver.getBurstFloorPps());
+            assertTrue(receiver.isRttPressureActive());
+            assertEquals("CALIBRATING", receiver.getResumeState());
+            assertEquals(1, receiver.getResumeValidatedRounds());
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousCausalTailRemainsReadableWithoutAdmissionDiagnostics() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.causalBulkFrameOutbound(512);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(
+                    payload,
+                    sender,
+                    8,
+                    12345L
+            );
+            payload.writerIndex(873);
+
+            final MetricsSynchronizationHandler receiver =
+                    new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteCausalSchedulerSupported());
+            assertFalse(
+                    receiver.isRemoteAdmissionDiagnosticsSupported()
+            );
+        } finally {
+            payload.release();
+        }
+    }
+
+    @Test
+    void previousOrderedHolExtensionRemainsReadableWithoutCausalTail() {
+        final SimpleMetricsLogger sender = new SimpleMetricsLogger();
+        sender.orderedHolProbe(7, 600);
+        final ByteBuf payload = Unpooled.buffer();
+        try {
+            MetricsSynchronizationHandler.writePayload(
+                    payload,
+                    sender,
+                    8,
+                    12345L
+            );
+            payload.writerIndex(801);
+
+            final MetricsSynchronizationHandler receiver =
+                    new MetricsSynchronizationHandler();
+            assertTrue(receiver.readPayload(payload));
+            assertTrue(receiver.isRemoteOrderedHolProbeSupported());
+            assertFalse(receiver.isRemoteCausalSchedulerSupported());
         } finally {
             payload.release();
         }

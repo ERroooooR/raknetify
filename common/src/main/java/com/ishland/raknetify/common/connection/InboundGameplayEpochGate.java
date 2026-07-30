@@ -47,6 +47,8 @@ final class InboundGameplayEpochGate {
     private final int maxPendingFrames;
     private final int maxPendingBytes;
     private final ArrayDeque<PendingFrame> pendingFrames = new ArrayDeque<>();
+    private final InboundBulkDependencyGate bulkDependencyGate =
+            new InboundBulkDependencyGate();
     private int pendingBytes;
     private int currentEpoch;
 
@@ -72,6 +74,15 @@ final class InboundGameplayEpochGate {
     }
 
     void handle(ChannelHandlerContext ctx, ByteBuf payload) {
+        handle(ctx, payload, true, 7);
+    }
+
+    void handle(
+            ChannelHandlerContext ctx,
+            ByteBuf payload,
+            boolean reliableOrdered,
+            int orderChannel
+    ) {
         final int epoch;
         try {
             epoch = CausalTransportProtocol.peekGameplayEpoch(payload);
@@ -86,7 +97,12 @@ final class InboundGameplayEpochGate {
             return;
         }
         if (epoch == currentEpoch) {
-            fireCurrentFrame(ctx, payload);
+            fireCurrentFrame(
+                    ctx,
+                    payload,
+                    reliableOrdered,
+                    orderChannel
+            );
             return;
         }
         if (currentEpoch == Integer.MAX_VALUE || epoch != currentEpoch + 1) {
@@ -106,7 +122,13 @@ final class InboundGameplayEpochGate {
                     "Pending gameplay epoch queue exceeded its bound"
             );
         }
-        pendingFrames.addLast(new PendingFrame(epoch, payload, bytes));
+        pendingFrames.addLast(new PendingFrame(
+                epoch,
+                payload,
+                bytes,
+                reliableOrdered,
+                orderChannel
+        ));
         pendingBytes += bytes;
         recordQueueState(ctx, true);
     }
@@ -130,7 +152,12 @@ final class InboundGameplayEpochGate {
             if (pending.epoch < currentEpoch) {
                 pending.payload.release();
             } else if (pending.epoch == currentEpoch) {
-                fireCurrentFrame(ctx, pending.payload);
+                fireCurrentFrame(
+                        ctx,
+                        pending.payload,
+                        pending.reliableOrdered,
+                        pending.orderChannel
+                );
             } else {
                 pendingFrames.addLast(pending);
                 pendingBytes += pending.bytes;
@@ -141,6 +168,7 @@ final class InboundGameplayEpochGate {
 
     void close(ChannelHandlerContext ctx) {
         clearPending(ctx);
+        bulkDependencyGate.close(ctx);
     }
 
     private void clearPending(ChannelHandlerContext ctx) {
@@ -152,7 +180,13 @@ final class InboundGameplayEpochGate {
         recordQueueState(ctx, false);
     }
 
-    private void fireCurrentFrame(ChannelHandlerContext ctx, ByteBuf payload) {
+    private void fireCurrentFrame(
+            ChannelHandlerContext ctx,
+            ByteBuf payload,
+            boolean reliableOrdered,
+            int orderChannel
+    ) {
+        final int encodedBytes = payload.readableBytes();
         final CausalTransportProtocol.GameplayFrame gameplayFrame;
         try {
             gameplayFrame = CausalTransportProtocol.decodeGameplayFrame(payload);
@@ -169,11 +203,17 @@ final class InboundGameplayEpochGate {
             final SimpleMetricsLogger metrics = metrics(ctx);
             if (metrics != null) {
                 metrics.causalAtomicBundleInbound(
-                        gameplayFrame.packets().size()
+                        gameplayFrame.packets().size(),
+                        encodedBytes
                 );
             }
         }
-        firePackets(ctx, gameplayFrame.packets());
+        bulkDependencyGate.handle(
+                ctx,
+                gameplayFrame,
+                reliableOrdered,
+                orderChannel
+        );
     }
 
     static void firePackets(ChannelHandlerContext ctx, List<ByteBuf> packets) {
@@ -223,7 +263,13 @@ final class InboundGameplayEpochGate {
         return null;
     }
 
-    private record PendingFrame(int epoch, ByteBuf payload, int bytes) {
+    private record PendingFrame(
+            int epoch,
+            ByteBuf payload,
+            int bytes,
+            boolean reliableOrdered,
+            int orderChannel
+    ) {
     }
 
 }

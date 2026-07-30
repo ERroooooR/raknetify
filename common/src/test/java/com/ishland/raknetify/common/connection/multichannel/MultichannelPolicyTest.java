@@ -38,6 +38,13 @@ class MultichannelPolicyTest {
                 2,
                 true
         ));
+        assertEquals(6, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.COMPATIBILITY,
+                DependencyDomain.GUARDED_BULK,
+                7,
+                true,
+                true
+        ));
         assertEquals(7, MultichannelPolicy.selectChannel(
                 MultichannelPolicy.Profile.COMPATIBILITY,
                 DependencyDomain.GUARDED_BULK,
@@ -70,6 +77,13 @@ class MultichannelPolicyTest {
                 MultichannelPolicy.Profile.AGGRESSIVE,
                 DependencyDomain.STRICT_WORLD,
                 2,
+                true
+        ));
+        assertEquals(6, MultichannelPolicy.selectChannel(
+                MultichannelPolicy.Profile.AGGRESSIVE,
+                DependencyDomain.GUARDED_BULK,
+                7,
+                true,
                 true
         ));
     }

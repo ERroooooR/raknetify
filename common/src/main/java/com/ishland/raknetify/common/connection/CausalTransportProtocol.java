@@ -54,10 +54,16 @@ public final class CausalTransportProtocol {
      * order channel can overtake the channel-7 advertisement.
      */
     public static final long CAPABILITY_CONFIRMATION = 1L << 3;
+    /**
+     * Guarded bulk may use channel 6 when strict channel-7 frames carry the
+     * highest bulk sequence that must be delivered before them.
+     */
+    public static final long CAPABILITY_GUARDED_BULK_WATERMARK = 1L << 4;
     public static final long LOCAL_CAPABILITIES = CAPABILITY_ATOMIC_BUNDLE
             | CAPABILITY_LOSSLESS_FENCE
             | CAPABILITY_GAMEPLAY_EPOCH
-            | CAPABILITY_CONFIRMATION;
+            | CAPABILITY_CONFIRMATION
+            | CAPABILITY_GUARDED_BULK_WATERMARK;
     public static final AttributeKey<Long> NEGOTIATED_CAPABILITIES =
             AttributeKey.valueOf("raknetify:causal-capabilities");
     public static final AttributeKey<Long> INBOUND_CAPABILITIES =
@@ -80,8 +86,11 @@ public final class CausalTransportProtocol {
     private static final int CONTROL_CAPABILITIES = 1;
     private static final int CONTROL_CAPABILITIES_ACK = 2;
     private static final int EPOCH_FRAME_VERSION = 2;
+    private static final int DEPENDENCY_FRAME_VERSION = 3;
     private static final int EPOCH_FRAME_SINGLE = 1;
     private static final int EPOCH_FRAME_BUNDLE = 2;
+    private static final int DEPENDENCY_STRICT = 1;
+    private static final int DEPENDENCY_GUARDED_BULK = 2;
     // The canonical five-byte VarInt encoding of -1. Negative Minecraft packet
     // ids are invalid, making this marker unambiguous inside a game frame.
     private static final byte[] BUNDLE_MARKER = new byte[]{
@@ -163,6 +172,9 @@ public final class CausalTransportProtocol {
                 || (negotiated & CAPABILITY_LOSSLESS_FENCE) == 0) {
             negotiated &= ~CAPABILITY_GAMEPLAY_EPOCH;
         }
+        if ((negotiated & CAPABILITY_GAMEPLAY_EPOCH) == 0) {
+            negotiated &= ~CAPABILITY_GUARDED_BULK_WATERMARK;
+        }
         return negotiated;
     }
 
@@ -239,9 +251,29 @@ public final class CausalTransportProtocol {
     }
 
     public static boolean isEpochGameplayFrame(ByteBuf payload) {
+        if (!hasCausalMarker(payload)) {
+            return false;
+        }
+        final int version =
+                payload.getUnsignedByte(payload.readerIndex() + BUNDLE_MARKER.length);
+        return version == EPOCH_FRAME_VERSION
+                || version == DEPENDENCY_FRAME_VERSION;
+    }
+
+    public static boolean isBulkDependencyFrame(ByteBuf payload) {
+        if (!isDependencyGameplayFrame(payload)) {
+            return false;
+        }
+        final ByteBuf duplicate = payload.duplicate();
+        return readEpochHeader(duplicate).dependencyKind()
+                == DependencyKind.GUARDED_BULK;
+    }
+
+    public static boolean isDependencyGameplayFrame(ByteBuf payload) {
         return hasCausalMarker(payload)
-                && payload.getUnsignedByte(payload.readerIndex() + BUNDLE_MARKER.length)
-                == EPOCH_FRAME_VERSION;
+                && payload.getUnsignedByte(
+                        payload.readerIndex() + BUNDLE_MARKER.length
+                ) == DEPENDENCY_FRAME_VERSION;
     }
 
     public static boolean isEpochAtomicBundle(ByteBuf payload) {
@@ -285,8 +317,41 @@ public final class CausalTransportProtocol {
         return out;
     }
 
+    public static ByteBuf encodeDependencyGameplayFrame(
+            ByteBufAllocator allocator,
+            int epoch,
+            DependencyKind dependencyKind,
+            int sequence,
+            ByteBuf packet
+    ) {
+        requireValidEpoch(epoch);
+        requireDependency(dependencyKind, sequence);
+        if (!packet.isReadable()) {
+            throw new IllegalArgumentException("Cannot encode an empty gameplay frame");
+        }
+        final int encodedBytes = BUNDLE_MARKER.length + 3
+                + MathUtil.varIntSize(epoch)
+                + MathUtil.varIntSize(sequence)
+                + packet.readableBytes();
+        final ByteBuf out = allocator.buffer(encodedBytes, encodedBytes);
+        out.writeBytes(BUNDLE_MARKER);
+        out.writeByte(DEPENDENCY_FRAME_VERSION);
+        out.writeByte(EPOCH_FRAME_SINGLE);
+        MathUtil.writeVarInt(out, epoch);
+        out.writeByte(dependencyKind.wireId);
+        MathUtil.writeVarInt(out, sequence);
+        out.writeBytes(packet, packet.readerIndex(), packet.readableBytes());
+        return out;
+    }
+
     public static ByteBuf encodeAtomicBundle(ByteBufAllocator allocator, List<ByteBuf> packets) {
-        return encodeAtomicBundle0(allocator, -1, packets);
+        return encodeAtomicBundle0(
+                allocator,
+                -1,
+                DependencyKind.NONE,
+                0,
+                packets
+        );
     }
 
     public static ByteBuf encodeAtomicBundle(
@@ -295,12 +360,37 @@ public final class CausalTransportProtocol {
             List<ByteBuf> packets
     ) {
         requireValidEpoch(epoch);
-        return encodeAtomicBundle0(allocator, epoch, packets);
+        return encodeAtomicBundle0(
+                allocator,
+                epoch,
+                DependencyKind.NONE,
+                0,
+                packets
+        );
+    }
+
+    public static ByteBuf encodeDependencyAtomicBundle(
+            ByteBufAllocator allocator,
+            int epoch,
+            int requiredBulkSequence,
+            List<ByteBuf> packets
+    ) {
+        requireValidEpoch(epoch);
+        requireDependency(DependencyKind.STRICT, requiredBulkSequence);
+        return encodeAtomicBundle0(
+                allocator,
+                epoch,
+                DependencyKind.STRICT,
+                requiredBulkSequence,
+                packets
+        );
     }
 
     private static ByteBuf encodeAtomicBundle0(
             ByteBufAllocator allocator,
             int epoch,
+            DependencyKind dependencyKind,
+            int dependencySequence,
             List<ByteBuf> packets
     ) {
         if (packets.size() < 2 || packets.size() > MAX_ATOMIC_BUNDLE_PACKETS) {
@@ -310,6 +400,9 @@ public final class CausalTransportProtocol {
         long encodedBytes = BUNDLE_MARKER.length + 1L + MathUtil.varIntSize(packets.size());
         if (epoch >= 0) {
             encodedBytes += 1L + MathUtil.varIntSize(epoch);
+        }
+        if (dependencyKind != DependencyKind.NONE) {
+            encodedBytes += 1L + MathUtil.varIntSize(dependencySequence);
         }
         for (ByteBuf packet : packets) {
             final int length = packet.readableBytes();
@@ -326,9 +419,15 @@ public final class CausalTransportProtocol {
         final ByteBuf out = allocator.buffer((int) encodedBytes, (int) encodedBytes);
         out.writeBytes(BUNDLE_MARKER);
         if (epoch >= 0) {
-            out.writeByte(EPOCH_FRAME_VERSION);
+            out.writeByte(dependencyKind == DependencyKind.NONE
+                    ? EPOCH_FRAME_VERSION
+                    : DEPENDENCY_FRAME_VERSION);
             out.writeByte(EPOCH_FRAME_BUNDLE);
             MathUtil.writeVarInt(out, epoch);
+            if (dependencyKind != DependencyKind.NONE) {
+                out.writeByte(dependencyKind.wireId);
+                MathUtil.writeVarInt(out, dependencySequence);
+            }
         } else {
             out.writeByte(VERSION);
         }
@@ -368,10 +467,22 @@ public final class CausalTransportProtocol {
             }
             final List<ByteBuf> packets = new ArrayList<>(1);
             packets.add(payload.readRetainedSlice(payload.readableBytes()));
-            return new GameplayFrame(epoch, false, packets);
+            return new GameplayFrame(
+                    epoch,
+                    false,
+                    header.dependencyKind(),
+                    header.dependencySequence(),
+                    packets
+            );
         }
         if (type == EPOCH_FRAME_BUNDLE) {
-            return new GameplayFrame(epoch, true, decodeBundlePackets(payload));
+            return new GameplayFrame(
+                    epoch,
+                    true,
+                    header.dependencyKind(),
+                    header.dependencySequence(),
+                    decodeBundlePackets(payload)
+            );
         }
         throw new CorruptedFrameException("Unknown causal gameplay frame type: " + type);
     }
@@ -433,16 +544,37 @@ public final class CausalTransportProtocol {
             throw new CorruptedFrameException("Truncated causal gameplay frame header");
         }
         payload.skipBytes(BUNDLE_MARKER.length);
-        payload.readUnsignedByte(); // version, checked by requireEpochGameplayFrame
+        final int version = payload.readUnsignedByte();
         final int type = payload.readUnsignedByte();
         if (type != EPOCH_FRAME_SINGLE && type != EPOCH_FRAME_BUNDLE) {
             throw new CorruptedFrameException(
                     "Unknown causal gameplay frame type: " + type
             );
         }
+        final int epoch = readNonNegativeVarInt(payload, "gameplay epoch");
+        if (version == EPOCH_FRAME_VERSION) {
+            return new EpochHeader(type, epoch, DependencyKind.NONE, 0);
+        }
+        if (!payload.isReadable()) {
+            throw new CorruptedFrameException(
+                    "Truncated guarded-bulk dependency header"
+            );
+        }
+        final DependencyKind dependencyKind =
+                DependencyKind.fromWireId(payload.readUnsignedByte());
+        final int dependencySequence =
+                readNonNegativeVarInt(payload, "guarded-bulk dependency sequence");
+        if (type == EPOCH_FRAME_BUNDLE
+                && dependencyKind != DependencyKind.STRICT) {
+            throw new CorruptedFrameException(
+                    "Atomic bundle must use the strict dependency kind"
+            );
+        }
         return new EpochHeader(
                 type,
-                readNonNegativeVarInt(payload, "gameplay epoch")
+                epoch,
+                dependencyKind,
+                dependencySequence
         );
     }
 
@@ -465,6 +597,22 @@ public final class CausalTransportProtocol {
         }
     }
 
+    private static void requireDependency(
+            DependencyKind dependencyKind,
+            int sequence
+    ) {
+        if (dependencyKind == null || dependencyKind == DependencyKind.NONE) {
+            throw new IllegalArgumentException(
+                    "A guarded-bulk dependency kind is required"
+            );
+        }
+        if (sequence < 0) {
+            throw new IllegalArgumentException(
+                    "Negative guarded-bulk dependency sequence: " + sequence
+            );
+        }
+    }
+
     public sealed interface ControlMessage
             permits Capabilities, CapabilitiesAck {
         int version();
@@ -478,10 +626,43 @@ public final class CausalTransportProtocol {
             implements ControlMessage {
     }
 
-    public record GameplayFrame(int epoch, boolean atomicBundle, List<ByteBuf> packets) {
+    public record GameplayFrame(
+            int epoch,
+            boolean atomicBundle,
+            DependencyKind dependencyKind,
+            int dependencySequence,
+            List<ByteBuf> packets
+    ) {
     }
 
-    private record EpochHeader(int type, int epoch) {
+    public enum DependencyKind {
+        NONE(0),
+        STRICT(DEPENDENCY_STRICT),
+        GUARDED_BULK(DEPENDENCY_GUARDED_BULK);
+
+        private final int wireId;
+
+        DependencyKind(int wireId) {
+            this.wireId = wireId;
+        }
+
+        private static DependencyKind fromWireId(int wireId) {
+            return switch (wireId) {
+                case DEPENDENCY_STRICT -> STRICT;
+                case DEPENDENCY_GUARDED_BULK -> GUARDED_BULK;
+                default -> throw new CorruptedFrameException(
+                        "Unknown guarded-bulk dependency kind: " + wireId
+                );
+            };
+        }
+    }
+
+    private record EpochHeader(
+            int type,
+            int epoch,
+            DependencyKind dependencyKind,
+            int dependencySequence
+    ) {
     }
 
 }

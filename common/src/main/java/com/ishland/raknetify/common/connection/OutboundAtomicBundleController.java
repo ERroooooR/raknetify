@@ -68,6 +68,28 @@ final class OutboundAtomicBundleController {
             int epoch,
             boolean epochFraming
     ) {
+        return accept(
+                ctx,
+                packet,
+                promise,
+                delimiter,
+                epoch,
+                epochFraming,
+                false,
+                0
+        );
+    }
+
+    CompletedBundle accept(
+            ChannelHandlerContext ctx,
+            ByteBuf packet,
+            ChannelPromise promise,
+            boolean delimiter,
+            int epoch,
+            boolean epochFraming,
+            boolean bulkDependencyFraming,
+            int requiredBulkSequence
+    ) {
         final AtomicBundleAssembler.CompletedBundle completed;
         try {
             completed = assembler.accept(
@@ -76,7 +98,9 @@ final class OutboundAtomicBundleController {
                     promise,
                     delimiter,
                     epoch,
-                    epochFraming
+                    epochFraming,
+                    bulkDependencyFraming,
+                    requiredBulkSequence
             );
         } catch (RuntimeException | Error throwable) {
             abort(ctx, throwable);

@@ -157,9 +157,12 @@ continues to expose the original channel table for explicit comparison.
 
 Unknown packets, every custom payload, entity/world/container traffic and transition packets use
 `STRICT_WORLD` on channel 7. Fabric identifies chunk, light and biome bodies as `GUARDED_BULK`, but
-that domain deliberately shares the strict scheduling queue and channel 7: it is observable
-separately, yet cannot overtake entity or block-entity state until an epoch-aware chunk commit
-dependency is implemented.
+that domain uses channel 6 only after both peers negotiate the guarded-bulk watermark extension.
+Bulk frames carry a monotonic sequence and every later strict frame carries the highest sequence it
+requires. The inbound gate buffers such strict frames until channel 6 has delivered that sequence;
+independent control/effect traffic does not enter the gate. Strict and bulk retain one outbound
+scheduling FIFO, which protects the reciprocal strict-before-bulk direction. A peer without the
+extension maps bulk back to strict channel 7 as well.
 
 Strict classification is a safety veto across all registered classifiers. A platform adapter or
 external batch/compression detector may match first, but a later custom-payload or unknown-packet
@@ -170,10 +173,23 @@ boundaries have already been aggregated are also explicitly strict instead of be
 legacy channel preference.
 
 A work-conserving deficit round-robin scheduler runs before RakNet fragmentation and reliability.
-It uses a 4:2:1 byte quantum for strict, independent-control and effect queues, while retaining FIFO
-within each queue. Strict world and guarded bulk share one FIFO. The old reflection-based
-replacement of `ReliabilityHandler.frameQueue` has been removed. JSONL metrics now expose queued,
-sent and pending frame/byte arrays in `DependencyDomain` enum order.
+It uses a 4:2:1 byte quantum for strict/bulk, independent-control and effect scheduling classes,
+while retaining FIFO within each class. Strict and bulk remain separately accounted in metrics.
+The old reflection-based replacement of `ReliabilityHandler.frameQueue` remains removed.
+
+Normal flushes admit at most 64 frames with a 64 KiB batch target; one logical Minecraft frame may
+itself be larger. Once RakNet publishes a non-writable state, strict and bulk frames remain above
+the fragmentation layer; only one bounded batch from the two negotiated independent domains may
+bypass each non-writable period. `FrameData` also carries a local-only
+priority through fragmentation, allowing independent fragments to preempt older bulk fragments in
+RakNet's reliable queue. The priority is not serialized. Strict and bulk deliberately have equal
+transport priority, so a strict frame cannot consume bandwidth ahead of the bulk watermark it
+needs.
+
+JSONL metrics expose queued, sent and pending frame/byte arrays in `DependencyDomain` enum order,
+bulk frame/byte counts, strict dependency wait time and atomic-bundle byte maxima. The metrics
+synchronization tail mirrors remote domain pending arrays, outbound bulk totals and the maximum
+outbound bundle size, while older peers safely ignore the optional trailing fields.
 
 The pure DRR policy is separated from its Netty ownership adapter. The adapter is the sole owner of
 scheduled `FrameData` references and promises until it either hands them to the next outbound

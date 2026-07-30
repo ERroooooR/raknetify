@@ -116,6 +116,7 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
     }
 
     private boolean isMultichannelEnabled;
+    private int outboundBulkSequence;
     private Object replayingPendingBundleMessage;
     private ChannelPromise replayingPendingBundlePromise;
 
@@ -297,7 +298,9 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                                 promise,
                                 decision.isBundleDelimiter(),
                                 outboundGameplayGate.currentEpoch(),
-                                isGameplayEpochFramingEnabled()
+                                isGameplayEpochFramingEnabled(),
+                                isGuardedBulkWatermarkEnabled(),
+                                outboundBulkSequence
                         );
                 if (completedBundle != null) {
                     writeAtomicBundle(ctx, completedBundle);
@@ -307,6 +310,22 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
             frameData = encode0(ctx, buf, decision);
             if (frameData != null) {
+                if (isGuardedBulkWatermarkEnabled()
+                        && decision.domain()
+                        == DependencyDomain.GUARDED_BULK) {
+                    promise.addListener(future -> {
+                        if (!future.isSuccess() && ctx.channel().isOpen()) {
+                            final Throwable cause =
+                                    CausalFutureUtil.failureCause(
+                                            future,
+                                            "Guarded-bulk dependency write"
+                                    );
+                            failAllCausalWrites(ctx, cause);
+                            ctx.fireExceptionCaught(cause);
+                            ctx.close();
+                        }
+                    });
+                }
                 writeFrame(ctx, frameData, promise, decision.domain());
                 frameData = null;
             } else {
@@ -340,12 +359,40 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                             MultichannelPolicy.configuredProfile(),
                             decision.domain(),
                             decision.channel(),
-                            isDependencyDomainsEnabled()
+                            isDependencyDomainsEnabled(),
+                            isGuardedBulkWatermarkEnabled()
                     );
+            final boolean guardedBulkFrame =
+                    isGuardedBulkWatermarkEnabled()
+                            && decision.domain()
+                            == DependencyDomain.GUARDED_BULK;
+            final int dependencySequence;
+            if (guardedBulkFrame) {
+                if (outboundBulkSequence == Integer.MAX_VALUE) {
+                    throw new CorruptedFrameException(
+                            "Guarded-bulk sequence exhausted"
+                    );
+                }
+                dependencySequence = outboundBulkSequence + 1;
+            } else {
+                dependencySequence = outboundBulkSequence;
+            }
             ByteBuf gameplayPayload = null;
             final FrameData frameData;
             try {
-                gameplayPayload = isGameplayEpochFramingEnabled()
+                gameplayPayload = isGuardedBulkWatermarkEnabled()
+                        && (decision.domain() == DependencyDomain.STRICT_WORLD
+                        || guardedBulkFrame)
+                        ? CausalTransportProtocol.encodeDependencyGameplayFrame(
+                                ctx.alloc(),
+                                outboundGameplayGate.currentEpoch(),
+                                guardedBulkFrame
+                                        ? CausalTransportProtocol.DependencyKind.GUARDED_BULK
+                                        : CausalTransportProtocol.DependencyKind.STRICT,
+                                dependencySequence,
+                                buf
+                        )
+                        : isGameplayEpochFramingEnabled()
                         ? CausalTransportProtocol.encodeGameplayFrame(
                                 ctx.alloc(),
                                 outboundGameplayGate.currentEpoch(),
@@ -355,6 +402,13 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 frameData = FrameData.create(ctx.alloc(), packetId, gameplayPayload);
             } finally {
                 ReferenceCountUtil.safeRelease(gameplayPayload);
+            }
+            if (guardedBulkFrame) {
+                outboundBulkSequence = dependencySequence;
+                final SimpleMetricsLogger metrics = metrics(ctx);
+                if (metrics != null) {
+                    metrics.causalBulkFrameOutbound(buf.readableBytes());
+                }
             }
             if (isMultichannelEnabled) {
                 if (packetChannelOverride >= 0)
@@ -404,7 +458,10 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             });
             final SimpleMetricsLogger metrics = metrics(ctx);
             if (metrics != null) {
-                metrics.causalAtomicBundleOutbound(promises.size());
+                metrics.causalAtomicBundleOutbound(
+                        promises.size(),
+                        envelope.readableBytes()
+                );
             }
             writeFrame(
                     ctx,
@@ -482,6 +539,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                 && capabilityNegotiator.hasAllOutbound(required);
     }
 
+    public boolean isGuardedBulkWatermarkEnabled() {
+        return isDependencyDomainsEnabled()
+                && capabilityNegotiator.hasOutbound(
+                        CausalTransportProtocol
+                                .CAPABILITY_GUARDED_BULK_WATERMARK
+                );
+    }
+
     private boolean isOutboundAtomicBundleNegotiated() {
         return capabilityNegotiator.hasOutbound(
                 CausalTransportProtocol.CAPABILITY_ATOMIC_BUNDLE
@@ -546,8 +611,16 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
 
     @Override
     public void flush(ChannelHandlerContext ctx) throws Exception {
-        domainFrameScheduler.drain(ctx);
+        domainFrameScheduler.drainAvailable(ctx);
         super.flush(ctx);
+        domainFrameScheduler.resume(ctx);
+    }
+
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx)
+            throws Exception {
+        domainFrameScheduler.resume(ctx);
+        super.channelWritabilityChanged(ctx);
     }
 
     private void writeFrame(
@@ -561,7 +634,19 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
             return;
         }
 
-        domainFrameScheduler.schedule(ctx, domain, frameData, promise);
+        final DependencyDomain schedulingDomain =
+                domain == DependencyDomain.GUARDED_BULK
+                        && !isGuardedBulkWatermarkEnabled()
+                        ? DependencyDomain.STRICT_WORLD
+                        : domain;
+        frameData.setPriority(schedulingDomain.transportPriority());
+        domainFrameScheduler.schedule(
+                ctx,
+                domain,
+                schedulingDomain,
+                frameData,
+                promise
+        );
     }
 
     private static SimpleMetricsLogger metrics(ChannelHandlerContext ctx) {
@@ -580,6 +665,17 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                     final ByteBuf payload = packet.createData().skipBytes(1);
                     if (isInboundGameplayEpochNegotiated()
                             && CausalTransportProtocol.isEpochGameplayFrame(payload)) {
+                        if (CausalTransportProtocol.isDependencyGameplayFrame(
+                                payload
+                        ) && !capabilityNegotiator.hasInbound(
+                                CausalTransportProtocol
+                                        .CAPABILITY_GUARDED_BULK_WATERMARK
+                        )) {
+                            payload.release();
+                            throw new CorruptedFrameException(
+                                    "Guarded-bulk dependency frame arrived without negotiation"
+                            );
+                        }
                         if (CausalTransportProtocol.isEpochAtomicBundle(payload)
                                 && (!packet.getReliability().isReliable
                                 || !packet.getReliability().isOrdered
@@ -589,7 +685,14 @@ public class RakNetSimpleMultiChannelCodec extends ChannelDuplexHandler {
                                     "Atomic bundle was not delivered on reliable ordered channel 7"
                             );
                         }
-                        inboundEpochGate.handle(ctx, payload);
+                        inboundEpochGate.handle(
+                                ctx,
+                                payload,
+                                packet.getReliability().isReliable
+                                        && packet.getReliability().isOrdered
+                                        && !packet.getReliability().isSequenced,
+                                packet.getOrderChannel()
+                        );
                     } else if (isInboundGameplayEpochNegotiated()
                             && inboundEpochGate.currentEpoch() > 0) {
                         // A completed drain fence proves that no unframed packet

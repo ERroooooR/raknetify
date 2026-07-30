@@ -67,17 +67,25 @@ active MTU, Reed-Solomon budget/effectiveness, DPLPMTUD state/outcomes, DSCP and
 It also records fragment-reassembly and ordered-queue head-of-line delay, plus actual
 external-compressor batch sizes. These fields distinguish a harmless per-tick display peak from
 transport queueing or a large compressed batch waiting for all RakNet fragments. The JSON schema
-also records byte-pacing and adaptive ACK/NACK recovery policy state. ACK protection remains off
+also records byte-pacing rate/target, the active bulk PPS floor, RTT-pressure state and adaptive
+ACK/NACK recovery policy state. These admission diagnostics are synchronized from the sender so a
+client capture can distinguish cwnd pressure from byte-bucket throttling. ACK protection remains off
 during healthy traffic. Three duplicate reliable FrameSets within one second activate it for at
 least two seconds;
 ACK ranges are then coalesced and repeated once after an RTT-derived 5-20 ms delay. This protects
 the feedback direction without permanently doubling ACK traffic. A sender-local burst drain floor
 activates only while its queued plus in-flight data exceeds 48 KiB and uses a four-RTT drain horizon
-clamped to 100-500 ms. New connections remain byte-paced at a conservative bootstrap rate while two
-small ACK rounds validate the path; their PPS probe remains capped at 600 until useful ACK history is
-established. During the protected first minute, healthy samples raise admission geometrically without
+clamped to 100-500 ms. Unknown healthy paths start at a token-bounded 128 KiB/s bootstrap while two
+small ACK rounds validate the path; paths with congestion evidence retain their reduced sender-derived
+rate. The PPS probe remains capped at 600 until useful ACK history is established. During the
+protected first minute, healthy samples raise admission geometrically without
 bypassing the byte bucket. Later healthy bursts retain at least 80% of recently validated path capacity
-and approach the configured 2000 packet-per-second default in steps of at most 2x. Isolated
+and may probe up to 1.5x validated capacity before feedback, approaching the configured 2000
+packet-per-second default in steps of at most 2x. RTT inflation without loss only reduces admission
+when at least two datagrams and one quarter of cwnd are represented in flight; three low-flight ACKs
+release stale RTT pressure independently of the longer rolling loss window. Application-limited ACK
+bursts cannot raise retained path capacity, and timeout-only loss is treated as ambiguous
+RANDOM/BURST loss until NACK/RACK/ECN supplies forward-path congestion evidence. Isolated
 loss permits only bounded growth up to 600 PPS, while active `RATE_LIMIT`, `QUEUE` or MTU-black-hole
 signals disable the backlog floor entirely. After loss becomes quiet, recovery starts near 100 PPS
 and doubles every 500 ms up to 600 PPS before normal healthy control resumes. The floor exits below
@@ -114,9 +122,14 @@ Raknetify defaults to the `compatibility` multichannel profile. Minecraft and mo
 implicit ordering between entity spawns, custom payloads, chunk state and bundle delimiters; those
 dependencies cannot be inferred safely from packet IDs. Compatibility mode therefore keeps every
 unknown packet, custom payload and entity/world/container packet on one reliable ordered RakNet
-channel. Chunk/light/biome bulk currently shares that same strict FIFO. This restores the original
-causal order and vanilla bundle atomicity while retaining RakNet congestion control, pacing,
-recovery, FEC, MTU discovery and compression.
+channel. When both peers advertise guarded-bulk watermarks, chunk/light/biome bodies move to
+reliable ordered channel 6. Every later strict frame carries the latest required bulk sequence, so
+the receiver can delay dependent state without sending an extra acknowledgement or allowing it to
+overtake the chunk body. Strict and bulk still share one outbound scheduling FIFO, preventing a
+later bulk body from overtaking earlier strict state. Peers without the capability retain the
+original channel-7 FIFO. This
+preserves causal order and vanilla bundle atomicity while retaining RakNet congestion control,
+pacing, recovery, FEC, MTU discovery and compression.
 
 The previous packet-class-based channel split remains available for controlled comparison with:
 
@@ -141,6 +154,15 @@ behavior; reliable packet promises are never reported successful merely because 
 occurred. A work-conserving dependency-domain scheduler selectively reopens only the two
 proven-independent domains, preserves FIFO within each domain, and leaves mod-defined state on the
 strict stream without requiring per-mod compatibility IDs.
+
+The scheduler now also honors RakNet backpressure instead of draining an entire Minecraft burst
+into the reliable frame queue during one flush. Admission is limited to 64 frames with a 64 KiB
+batch target per event-loop turn (one logical Minecraft frame may itself be larger). While the
+transport is non-writable, only negotiated independent control/effect
+traffic may enter through one bounded escape batch; strict and guarded-bulk data remain in the
+bounded domain queue. Sender-local
+fragment priorities retain that preemption after a large packet is split, while strict and bulk
+keep equal transport priority because a strict watermark may depend on the older bulk frame.
 
 ## BandwidthOptimizer compatibility
 

@@ -34,6 +34,8 @@ import io.netty.handler.codec.CorruptedFrameException;
 import network.ycc.raknet.frame.FrameData;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayDeque;
+import java.util.Queue;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -136,6 +138,128 @@ class DependencyDomainFrameSchedulerTest {
         assertEquals(1, flushCounter.flushes);
         assertFrame(channel, 1);
         assertFrame(channel, 2);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void transportBackpressureRetainsBulkButLetsIndependentControlPreempt() {
+        final ContextCapture capture = new ContextCapture();
+        final FlushCounter flushCounter = new FlushCounter();
+        final EmbeddedChannel channel = new EmbeddedChannel(flushCounter, capture);
+        final DependencyDomainFrameScheduler scheduler =
+                new DependencyDomainFrameScheduler(16, 1024);
+        channel.attr(network.ycc.raknet.RakNet.WRITABLE).set(false);
+        final ChannelPromise bulkPromise = channel.newPromise();
+        final ChannelPromise controlPromise = channel.newPromise();
+
+        scheduler.schedule(
+                capture.context,
+                DependencyDomain.GUARDED_BULK,
+                frame(channel, 1),
+                bulkPromise
+        );
+        scheduler.schedule(
+                capture.context,
+                DependencyDomain.INDEPENDENT_CONTROL,
+                frame(channel, 2),
+                controlPromise
+        );
+        channel.runPendingTasks();
+
+        assertEquals(1, scheduler.size());
+        assertFalse(bulkPromise.isDone());
+        assertTrue(controlPromise.isSuccess());
+        assertEquals(1, flushCounter.flushes);
+        assertFrame(channel, 2);
+
+        channel.attr(network.ycc.raknet.RakNet.WRITABLE).set(true);
+        scheduler.resume(capture.context);
+        channel.runPendingTasks();
+
+        assertEquals(0, scheduler.size());
+        assertTrue(bulkPromise.isSuccess());
+        assertEquals(2, flushCounter.flushes);
+        assertFrame(channel, 1);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void automaticDrainAdmitsAtMostOneBoundedFrameBatchPerTask() {
+        final ContextCapture capture = new ContextCapture();
+        final FlushCounter flushCounter = new FlushCounter();
+        final EmbeddedChannel channel = new EmbeddedChannel(flushCounter, capture);
+        final ManualTaskSubmitter tasks = new ManualTaskSubmitter();
+        final DependencyDomainFrameScheduler scheduler =
+                new DependencyDomainFrameScheduler(128, 4096, tasks);
+
+        for (int i = 0; i < 65; i++) {
+            scheduler.schedule(
+                    capture.context,
+                    DependencyDomain.GUARDED_BULK,
+                    frame(channel, i),
+                    channel.newPromise()
+            );
+        }
+
+        assertEquals(1, tasks.size());
+        tasks.runNext();
+        assertEquals(1, scheduler.size());
+        assertEquals(1, flushCounter.flushes);
+        assertEquals(1, tasks.size());
+
+        tasks.runNext();
+        assertEquals(0, scheduler.size());
+        assertEquals(2, flushCounter.flushes);
+        assertEquals(0, tasks.size());
+        for (int i = 0; i < 65; i++) {
+            assertFrame(channel, i);
+        }
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void backpressureBypassCannotDrainAnUnboundedIndependentBurst() {
+        final ContextCapture capture = new ContextCapture();
+        final FlushCounter flushCounter = new FlushCounter();
+        final EmbeddedChannel channel = new EmbeddedChannel(flushCounter, capture);
+        final ManualTaskSubmitter tasks = new ManualTaskSubmitter();
+        final DependencyDomainFrameScheduler scheduler =
+                new DependencyDomainFrameScheduler(128, 4096, tasks);
+        channel.attr(network.ycc.raknet.RakNet.WRITABLE).set(false);
+        scheduler.schedule(
+                capture.context,
+                DependencyDomain.GUARDED_BULK,
+                frame(channel, 1),
+                channel.newPromise()
+        );
+        for (int i = 0; i < 65; i++) {
+            scheduler.schedule(
+                    capture.context,
+                    DependencyDomain.INDEPENDENT_CONTROL,
+                    frame(channel, i + 2),
+                    channel.newPromise()
+            );
+        }
+
+        tasks.runNext();
+
+        assertEquals(2, scheduler.size());
+        assertEquals(1, flushCounter.flushes);
+        assertEquals(0, tasks.size());
+
+        channel.attr(network.ycc.raknet.RakNet.WRITABLE).set(true);
+        scheduler.resume(capture.context);
+        tasks.runNext();
+        assertEquals(0, scheduler.size());
+        assertEquals(2, flushCounter.flushes);
+
+        FrameData outbound;
+        int emitted = 0;
+        while ((outbound = channel.readOutbound()) != null) {
+            emitted++;
+            outbound.release();
+        }
+        assertEquals(66, emitted);
         assertFalse(channel.finishAndReleaseAll());
     }
 
@@ -294,6 +418,25 @@ class DependencyDomainFrameSchedulerTest {
         public void flush(ChannelHandlerContext ctx) {
             flushes++;
             ctx.flush();
+        }
+    }
+
+    private static final class ManualTaskSubmitter
+            implements DependencyDomainFrameScheduler.DrainTaskSubmitter {
+
+        private final Queue<Runnable> tasks = new ArrayDeque<>();
+
+        @Override
+        public void submit(ChannelHandlerContext ctx, Runnable task) {
+            tasks.add(task);
+        }
+
+        private int size() {
+            return tasks.size();
+        }
+
+        private void runNext() {
+            tasks.remove().run();
         }
     }
 }

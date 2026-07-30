@@ -140,8 +140,21 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile long causalFutureBytesPending;
     private volatile long causalAtomicBundlesOutbound;
     private volatile long causalAtomicBundlePacketsOutbound;
+    private volatile long causalAtomicBundleBytesOutbound;
+    private volatile long causalAtomicBundleMaxBytesOutbound;
     private volatile long causalAtomicBundlesInbound;
     private volatile long causalAtomicBundlePacketsInbound;
+    private volatile long causalAtomicBundleBytesInbound;
+    private volatile long causalAtomicBundleMaxBytesInbound;
+    private volatile long causalBulkFramesOutbound;
+    private volatile long causalBulkBytesOutbound;
+    private volatile long causalBulkFramesInbound;
+    private volatile long causalBulkBytesInbound;
+    private volatile long causalStrictFramesBlocked;
+    private volatile long causalStrictFramesReleased;
+    private volatile int causalStrictFramesPending;
+    private volatile long causalStrictBytesPending;
+    private volatile long causalStrictMaxWaitNanos;
     private volatile long ackRepeatedPackets = 0L;
     private volatile long ackRepeatedFrameSets = 0L;
     private volatile long framesError = 0L;
@@ -161,6 +174,9 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     private volatile int currentQueuedBytes = 0;
     private volatile double adaptivePacingRate;
     private volatile long adaptiveBytePacingRate;
+    private volatile long adaptiveBytePacingTarget;
+    private volatile double adaptiveBurstFloorPps;
+    private volatile boolean adaptiveRttPressure;
     private volatile boolean adaptiveAckProtection;
     private volatile long adaptiveAckFlushDelayNanos;
     private volatile long adaptiveAckRepeatDelayNanos;
@@ -578,13 +594,64 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     }
 
     public void causalAtomicBundleOutbound(int packets) {
+        causalAtomicBundleOutbound(packets, 0);
+    }
+
+    public void causalAtomicBundleOutbound(int packets, int bytes) {
         causalAtomicBundlesOutbound++;
         causalAtomicBundlePacketsOutbound += packets;
+        causalAtomicBundleBytesOutbound += Math.max(0, bytes);
+        causalAtomicBundleMaxBytesOutbound = Math.max(
+                causalAtomicBundleMaxBytesOutbound,
+                bytes
+        );
     }
 
     public void causalAtomicBundleInbound(int packets) {
+        causalAtomicBundleInbound(packets, 0);
+    }
+
+    public void causalAtomicBundleInbound(int packets, int bytes) {
         causalAtomicBundlesInbound++;
         causalAtomicBundlePacketsInbound += packets;
+        causalAtomicBundleBytesInbound += Math.max(0, bytes);
+        causalAtomicBundleMaxBytesInbound = Math.max(
+                causalAtomicBundleMaxBytesInbound,
+                bytes
+        );
+    }
+
+    public void causalBulkFrameOutbound(int bytes) {
+        causalBulkFramesOutbound++;
+        causalBulkBytesOutbound += Math.max(0, bytes);
+    }
+
+    public void causalBulkFrameInbound(int bytes) {
+        causalBulkFramesInbound++;
+        causalBulkBytesInbound += Math.max(0, bytes);
+    }
+
+    public void causalStrictFrameBlocked(int framesPending, long bytesPending) {
+        causalStrictFramesBlocked++;
+        causalStrictQueueState(framesPending, bytesPending);
+    }
+
+    public void causalStrictFrameReleased(
+            int framesPending,
+            long bytesPending,
+            long waitNanos
+    ) {
+        causalStrictFramesReleased++;
+        causalStrictMaxWaitNanos = Math.max(
+                causalStrictMaxWaitNanos,
+                waitNanos
+        );
+        causalStrictQueueState(framesPending, bytesPending);
+    }
+
+    public void causalStrictQueueState(int framesPending, long bytesPending) {
+        causalStrictFramesPending = Math.max(0, framesPending);
+        causalStrictBytesPending = Math.max(0L, bytesPending);
     }
 
     @Override
@@ -670,6 +737,17 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     @Override
     public void adaptiveBytePacingRate(long bytesPerSecond) { adaptiveBytePacingRate = bytesPerSecond; }
+
+    @Override
+    public void adaptiveAdmissionDiagnostics(
+            long targetBytesPerSecond,
+            double burstFloorPacketsPerSecond,
+            boolean rttPressureActive
+    ) {
+        adaptiveBytePacingTarget = Math.max(0L, targetBytesPerSecond);
+        adaptiveBurstFloorPps = Math.max(0D, burstFloorPacketsPerSecond);
+        adaptiveRttPressure = rttPressureActive;
+    }
 
     @Override
     public void adaptiveAckPolicy(boolean protectedMode, long flushDelayNanos, long repeatDelayNanos) {
@@ -915,6 +993,15 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
 
     public double getAdaptivePacingRate() { return adaptivePacingRate; }
     public long getAdaptiveBytePacingRate() { return adaptiveBytePacingRate; }
+    public long getAdaptiveBytePacingTarget() {
+        return adaptiveBytePacingTarget;
+    }
+    public double getAdaptiveBurstFloorPps() {
+        return adaptiveBurstFloorPps;
+    }
+    public boolean isAdaptiveRttPressure() {
+        return adaptiveRttPressure;
+    }
     public long getAdaptiveDeliveryRate() { return adaptiveDeliveryRate; }
     public double getAdaptiveLossRatio() { return adaptiveLossRatio; }
     public long getAdaptiveAcknowledged() { return adaptiveAcknowledged; }
@@ -1065,10 +1152,31 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
     public long getCausalAtomicBundlePacketsOutbound() {
         return causalAtomicBundlePacketsOutbound;
     }
+    public long getCausalAtomicBundleBytesOutbound() {
+        return causalAtomicBundleBytesOutbound;
+    }
+    public long getCausalAtomicBundleMaxBytesOutbound() {
+        return causalAtomicBundleMaxBytesOutbound;
+    }
     public long getCausalAtomicBundlesInbound() { return causalAtomicBundlesInbound; }
     public long getCausalAtomicBundlePacketsInbound() {
         return causalAtomicBundlePacketsInbound;
     }
+    public long getCausalAtomicBundleBytesInbound() {
+        return causalAtomicBundleBytesInbound;
+    }
+    public long getCausalAtomicBundleMaxBytesInbound() {
+        return causalAtomicBundleMaxBytesInbound;
+    }
+    public long getCausalBulkFramesOutbound() { return causalBulkFramesOutbound; }
+    public long getCausalBulkBytesOutbound() { return causalBulkBytesOutbound; }
+    public long getCausalBulkFramesInbound() { return causalBulkFramesInbound; }
+    public long getCausalBulkBytesInbound() { return causalBulkBytesInbound; }
+    public long getCausalStrictFramesBlocked() { return causalStrictFramesBlocked; }
+    public long getCausalStrictFramesReleased() { return causalStrictFramesReleased; }
+    public int getCausalStrictFramesPending() { return causalStrictFramesPending; }
+    public long getCausalStrictBytesPending() { return causalStrictBytesPending; }
+    public long getCausalStrictMaxWaitNanos() { return causalStrictMaxWaitNanos; }
     public long getAckRepeatedPackets() { return ackRepeatedPackets; }
     public long getAckRepeatedFrameSets() { return ackRepeatedFrameSets; }
     public boolean isAdaptiveAckProtection() { return adaptiveAckProtection; }
@@ -1155,17 +1263,29 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"causal_outbound_queue_overflows_by_queue\":%s," +
                         "\"causal_future_frames_queued\":%d," +
                         "\"causal_future_frames_pending\":%d,\"causal_future_bytes_pending\":%d," +
-                        "\"causal_atomic_bundles_outbound\":%d," +
-                        "\"causal_atomic_bundle_packets_outbound\":%d," +
-                        "\"causal_atomic_bundles_inbound\":%d," +
-                        "\"causal_atomic_bundle_packets_inbound\":%d," +
-                        "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
+                         "\"causal_atomic_bundles_outbound\":%d," +
+                         "\"causal_atomic_bundle_packets_outbound\":%d," +
+                         "\"causal_atomic_bundle_bytes_outbound\":%d," +
+                         "\"causal_atomic_bundle_max_bytes_outbound\":%d," +
+                         "\"causal_atomic_bundles_inbound\":%d," +
+                         "\"causal_atomic_bundle_packets_inbound\":%d," +
+                         "\"causal_atomic_bundle_bytes_inbound\":%d," +
+                         "\"causal_atomic_bundle_max_bytes_inbound\":%d," +
+                         "\"causal_bulk_frames_outbound\":%d,\"causal_bulk_bytes_outbound\":%d," +
+                         "\"causal_bulk_frames_inbound\":%d,\"causal_bulk_bytes_inbound\":%d," +
+                         "\"causal_strict_frames_blocked\":%d,\"causal_strict_frames_released\":%d," +
+                         "\"causal_strict_frames_pending\":%d,\"causal_strict_bytes_pending\":%d," +
+                         "\"causal_strict_max_wait_ns\":%d," +
+                         "\"ack_repeated_packets\":%d,\"ack_repeated_framesets\":%d," +
                         "\"ack_protection\":%s,\"ack_flush_delay_ns\":%d,\"ack_repeat_delay_ns\":%d," +
                         "\"application_limited\":%s,\"backlog_state\":\"%s\"," +
                         "\"backlog_age_ns\":%d,\"backlog_probes\":%d," +
                         "\"validated_path_bps\":%d,\"delivery_sample_application_limited\":%s," +
                         "\"resume_state\":\"%s\",\"resume_validated_rounds\":%d," +
-                        "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d,\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
+                        "\"pacing_pps\":%.3f,\"byte_pacing_bps\":%d," +
+                        "\"byte_pacing_target_bps\":%d,\"burst_floor_pps\":%.3f," +
+                        "\"rtt_pressure_active\":%s," +
+                        "\"delivery_bps\":%d,\"loss_ratio\":%.6f," +
                         "\"acked\":%d,\"lost\":%d,\"loss_type\":\"%s\",\"mtu\":%d," +
                         "\"fec_recovered\":%d,\"fec_parity_packets\":%d,\"fec_parity_bytes\":%d,\"fec_expired\":%d," +
                         "\"mtu_probe_sent\":%d,\"mtu_probe_acked\":%d,\"mtu_probe_timeout\":%d," +
@@ -1234,10 +1354,22 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                         "\"remote_ordered_channel_max_wait_ns\":%s," +
                         "\"remote_ordered_hol_probe_supported\":%s," +
                         "\"remote_ordered_hol_probes\":%d," +
-                        "\"remote_ordered_hol_probe_bytes\":%d," +
-                        "\"remote_ordered_hol_probe_acked_bytes\":%d," +
-                        "\"remote_ordered_hol_probe_channel\":%d," +
-                        "\"remote_congestion_reason\":\"%s\"," +
+                         "\"remote_ordered_hol_probe_bytes\":%d," +
+                         "\"remote_ordered_hol_probe_acked_bytes\":%d," +
+                         "\"remote_ordered_hol_probe_channel\":%d," +
+                         "\"remote_causal_scheduler_supported\":%s," +
+                         "\"remote_dependency_domain_pending_frames\":%s," +
+                         "\"remote_dependency_domain_pending_bytes\":%s," +
+                         "\"remote_causal_bulk_frames_outbound\":%d," +
+                         "\"remote_causal_bulk_bytes_outbound\":%d," +
+                         "\"remote_causal_atomic_bundle_max_bytes_outbound\":%d," +
+                         "\"remote_admission_diagnostics_supported\":%s," +
+                         "\"remote_byte_pacing_target_bps\":%d," +
+                         "\"remote_burst_floor_pps\":%.3f," +
+                         "\"remote_rtt_pressure_active\":%s," +
+                         "\"remote_resume_state\":\"%s\"," +
+                         "\"remote_resume_validated_rounds\":%d," +
+                         "\"remote_congestion_reason\":\"%s\"," +
                         "\"remote_rtt_inflation\":%.6f,\"remote_pacing_capped\":%s," +
                         "\"remote_bandwidth_probe_suppressed\":%s," +
                         "\"export_dropped\":%d}%n",
@@ -1278,14 +1410,24 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(causalQueues.bytesPendingByQueue()),
                 Arrays.toString(causalQueues.queueOverflowsByQueue()),
                 causalFutureFramesQueued,
-                causalFutureFramesPending, causalFutureBytesPending,
-                causalAtomicBundlesOutbound, causalAtomicBundlePacketsOutbound,
-                causalAtomicBundlesInbound, causalAtomicBundlePacketsInbound,
-                ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
+                 causalFutureFramesPending, causalFutureBytesPending,
+                 causalAtomicBundlesOutbound, causalAtomicBundlePacketsOutbound,
+                 causalAtomicBundleBytesOutbound, causalAtomicBundleMaxBytesOutbound,
+                 causalAtomicBundlesInbound, causalAtomicBundlePacketsInbound,
+                 causalAtomicBundleBytesInbound, causalAtomicBundleMaxBytesInbound,
+                 causalBulkFramesOutbound, causalBulkBytesOutbound,
+                 causalBulkFramesInbound, causalBulkBytesInbound,
+                 causalStrictFramesBlocked, causalStrictFramesReleased,
+                 causalStrictFramesPending, causalStrictBytesPending,
+                 causalStrictMaxWaitNanos,
+                 ackRepeatedPackets, ackRepeatedFrameSets, adaptiveAckProtection,
                 adaptiveAckFlushDelayNanos, adaptiveAckRepeatDelayNanos,
                 applicationLimited, backlogState, backlogAgeNanos, backlogProbes,
                 validatedPathRate, deliverySampleApplicationLimited, resumeState, resumeValidatedRounds,
-                adaptivePacingRate, adaptiveBytePacingRate, adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
+                adaptivePacingRate, adaptiveBytePacingRate,
+                adaptiveBytePacingTarget, adaptiveBurstFloorPps,
+                adaptiveRttPressure,
+                adaptiveDeliveryRate, adaptiveLossRatio, adaptiveAcknowledged,
                 adaptiveLost, adaptiveLossType, adaptiveMTU, fecRecovered, fecParityPackets,
                 fecParityBytes, fecExpired, mtuProbesSent, mtuProbesAcknowledged, mtuProbesTimedOut,
                 adaptiveDscp, smallWriteBatches, smallWriteFrames, smallWriteDelayNanos, pacingDelayNanos,
@@ -1329,9 +1471,18 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
                 Arrays.toString(remoteOrderedChannelBlockedOrderIndex()),
                 Arrays.toString(remoteOrderedChannelReleasedFrames()),
                 Arrays.toString(remoteOrderedChannelMaxWaitNanos()),
-                isRemoteOrderedHolProbeSupported(), remoteOrderedHolProbes(),
-                remoteOrderedHolProbeBytes(), remoteOrderedHolProbeAckedBytes(), remoteOrderedHolProbeChannel(),
-                remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
+                 isRemoteOrderedHolProbeSupported(), remoteOrderedHolProbes(),
+                 remoteOrderedHolProbeBytes(), remoteOrderedHolProbeAckedBytes(), remoteOrderedHolProbeChannel(),
+                 isRemoteCausalSchedulerSupported(),
+                 Arrays.toString(remoteDependencyDomainPendingFrames()),
+                 Arrays.toString(remoteDependencyDomainPendingBytes()),
+                 remoteCausalBulkFramesOutbound(), remoteCausalBulkBytesOutbound(),
+                 remoteCausalAtomicBundleMaxBytesOutbound(),
+                 isRemoteAdmissionDiagnosticsSupported(),
+                 remoteBytePacingTarget(), remoteBurstFloorPps(),
+                 remoteRttPressureActive(), remoteResumeState(),
+                 remoteResumeValidatedRounds(),
+                 remoteCongestionReason(), remoteRttInflation(), remotePacingCapped(), remoteBandwidthProbeSuppressed(),
                 METRICS_LINES_DROPPED.get());
     }
 
@@ -1459,6 +1610,68 @@ public class SimpleMetricsLogger implements RakNet.MetricsLogger {
             ? metricsSynchronizationHandler.getOrderedHolProbeAckedBytes() : 0L; }
     private int remoteOrderedHolProbeChannel() { return isRemoteOrderedHolProbeSupported()
             ? metricsSynchronizationHandler.getOrderedHolProbeChannel() : -1; }
+    private boolean isRemoteCausalSchedulerSupported() {
+        return metricsSynchronizationHandler != null
+                && metricsSynchronizationHandler
+                .isRemoteCausalSchedulerSupported();
+    }
+    private int[] remoteDependencyDomainPendingFrames() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getDependencyDomainPendingFrames()
+                : new int[DependencyDomain.values().length];
+    }
+    private long[] remoteDependencyDomainPendingBytes() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getDependencyDomainPendingBytes()
+                : new long[DependencyDomain.values().length];
+    }
+    private long remoteCausalBulkFramesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler.getCausalBulkFramesOutbound()
+                : 0L;
+    }
+    private long remoteCausalBulkBytesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler.getCausalBulkBytesOutbound()
+                : 0L;
+    }
+    private long remoteCausalAtomicBundleMaxBytesOutbound() {
+        return isRemoteCausalSchedulerSupported()
+                ? metricsSynchronizationHandler
+                .getCausalAtomicBundleMaxBytesOutbound()
+                : 0L;
+    }
+    private boolean isRemoteAdmissionDiagnosticsSupported() {
+        return metricsSynchronizationHandler != null
+                && metricsSynchronizationHandler
+                .isRemoteAdmissionDiagnosticsSupported();
+    }
+    private long remoteBytePacingTarget() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getBytePacingTarget()
+                : 0L;
+    }
+    private double remoteBurstFloorPps() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getBurstFloorPps()
+                : 0D;
+    }
+    private boolean remoteRttPressureActive() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                && metricsSynchronizationHandler.isRttPressureActive();
+    }
+    private String remoteResumeState() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getResumeState()
+                : "IDLE";
+    }
+    private int remoteResumeValidatedRounds() {
+        return isRemoteAdmissionDiagnosticsSupported()
+                ? metricsSynchronizationHandler.getResumeValidatedRounds()
+                : 0;
+    }
     private long remoteRackRetransmitBytes() { return isRemoteAdvancedRecoverySupported()
             ? metricsSynchronizationHandler.getRackRetransmitBytes() : 0L; }
     private long remoteRackRetransmitFrameSets() { return isRemoteAdvancedRecoverySupported()

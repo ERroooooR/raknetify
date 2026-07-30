@@ -35,6 +35,7 @@ import java.util.Locale;
 public final class MultichannelPolicy {
 
     public static final int STRICT_GAME_CHANNEL = 7;
+    public static final int GUARDED_BULK_CHANNEL = 6;
     public static final String PROFILE_PROPERTY = "raknetify.multichannelProfile";
 
     private static final Profile CONFIGURED_PROFILE = parseProfile(
@@ -54,11 +55,33 @@ public final class MultichannelPolicy {
             int aggressiveChannel,
             boolean independentDomainsReady
     ) {
+        return selectChannel(
+                profile,
+                domain,
+                aggressiveChannel,
+                independentDomainsReady,
+                false
+        );
+    }
+
+    public static int selectChannel(
+            Profile profile,
+            DependencyDomain domain,
+            int aggressiveChannel,
+            boolean independentDomainsReady,
+            boolean guardedBulkReady
+    ) {
         if (!independentDomainsReady) {
             return STRICT_GAME_CHANNEL;
         }
+        if (domain == DependencyDomain.GUARDED_BULK && guardedBulkReady) {
+            return GUARDED_BULK_CHANNEL;
+        }
         if (profile == Profile.AGGRESSIVE) {
             return aggressiveChannel;
+        }
+        if (domain == DependencyDomain.GUARDED_BULK) {
+            return STRICT_GAME_CHANNEL;
         }
         return domain.orderChannel();
     }

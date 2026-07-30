@@ -63,6 +63,14 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private static final int FEC_EXTENDED_SIZE = 48;
     private static final int ADVANCED_RECOVERY_EXTENDED_SIZE = 388;
     private static final int ORDERED_HOL_PROBE_EXTENDED_SIZE = 28;
+    // Wire order is the four DependencyDomain values declared when this
+    // extension was introduced. Keep it fixed if local enum values are added.
+    private static final int CAUSAL_DEPENDENCY_DOMAIN_COUNT = 4;
+    private static final int CAUSAL_SCHEDULER_EXTENDED_SIZE =
+            CAUSAL_DEPENDENCY_DOMAIN_COUNT * (Integer.BYTES + Long.BYTES)
+                    + 3 * Long.BYTES;
+    private static final int ADMISSION_DIAGNOSTICS_EXTENDED_SIZE =
+            Long.BYTES + Double.BYTES + 2 + Integer.BYTES;
 
     private ScheduledFuture<?> future;
     private ChannelHandlerContext ctx;
@@ -89,8 +97,10 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
                        + APPLICATION_BATCH_EXTENDED_SIZE + ACK_POLICY_EXTENDED_SIZE
                        + DEMAND_EXTENDED_SIZE + NACK_OUTCOME_EXTENDED_SIZE
                        + NACK_POLICY_EXTENDED_SIZE + NACK_REPEAT_EXTENDED_SIZE
-                       + FEC_EXTENDED_SIZE + ADVANCED_RECOVERY_EXTENDED_SIZE
-                       + ORDERED_HOL_PROBE_EXTENDED_SIZE);
+                        + FEC_EXTENDED_SIZE + ADVANCED_RECOVERY_EXTENDED_SIZE
+                        + ORDERED_HOL_PROBE_EXTENDED_SIZE
+                        + CAUSAL_SCHEDULER_EXTENDED_SIZE
+                        + ADMISSION_DIAGNOSTICS_EXTENDED_SIZE);
                writePayload(buffer, logger, config.getDefaultPendingFrameSets(), System.currentTimeMillis());
                final FrameData frameData = FrameData.create(this.ctx.alloc(), Constants.RAKNET_METRICS_SYNC_PACKET_ID, buffer);
                frameData.setReliability(FramedPacket.Reliability.UNRELIABLE);
@@ -203,6 +213,20 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     private long orderedHolProbeBytes;
     private long orderedHolProbeAckedBytes;
     private int orderedHolProbeChannel = -1;
+    private boolean isRemoteCausalSchedulerSupported;
+    private final int[] dependencyDomainPendingFrames =
+            new int[CAUSAL_DEPENDENCY_DOMAIN_COUNT];
+    private final long[] dependencyDomainPendingBytes =
+            new long[CAUSAL_DEPENDENCY_DOMAIN_COUNT];
+    private long causalBulkFramesOutbound;
+    private long causalBulkBytesOutbound;
+    private long causalAtomicBundleMaxBytesOutbound;
+    private boolean isRemoteAdmissionDiagnosticsSupported;
+    private long bytePacingTarget;
+    private double burstFloorPps;
+    private boolean rttPressureActive;
+    private String resumeState = "IDLE";
+    private int resumeValidatedRounds;
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -358,6 +382,48 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
     public long getOrderedHolProbeBytes() { return orderedHolProbeBytes; }
     public long getOrderedHolProbeAckedBytes() { return orderedHolProbeAckedBytes; }
     public int getOrderedHolProbeChannel() { return orderedHolProbeChannel; }
+    public boolean isRemoteCausalSchedulerSupported() {
+        return isRemoteCausalSchedulerSupported;
+    }
+    public int[] getDependencyDomainPendingFrames() {
+        return java.util.Arrays.copyOf(
+                dependencyDomainPendingFrames,
+                dependencyDomainPendingFrames.length
+        );
+    }
+    public long[] getDependencyDomainPendingBytes() {
+        return java.util.Arrays.copyOf(
+                dependencyDomainPendingBytes,
+                dependencyDomainPendingBytes.length
+        );
+    }
+    public long getCausalBulkFramesOutbound() {
+        return causalBulkFramesOutbound;
+    }
+    public long getCausalBulkBytesOutbound() {
+        return causalBulkBytesOutbound;
+    }
+    public long getCausalAtomicBundleMaxBytesOutbound() {
+        return causalAtomicBundleMaxBytesOutbound;
+    }
+    public boolean isRemoteAdmissionDiagnosticsSupported() {
+        return isRemoteAdmissionDiagnosticsSupported;
+    }
+    public long getBytePacingTarget() {
+        return bytePacingTarget;
+    }
+    public double getBurstFloorPps() {
+        return burstFloorPps;
+    }
+    public boolean isRttPressureActive() {
+        return rttPressureActive;
+    }
+    public String getResumeState() {
+        return resumeState;
+    }
+    public int getResumeValidatedRounds() {
+        return resumeValidatedRounds;
+    }
 
     static void writePayload(ByteBuf buffer, SimpleMetricsLogger logger, int defaultPendingFrameSets, long nowMillis) {
         buffer.writeByte(VERSION);
@@ -455,6 +521,29 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
         buffer.writeLong(logger.getOrderedHolProbeBytes());
         buffer.writeLong(logger.getOrderedHolProbeAckedBytes());
         buffer.writeInt(logger.getOrderedHolProbeChannel());
+        final long[] domainPendingFrames =
+                logger.getDependencyDomainPendingFrames();
+        final long[] domainPendingBytes =
+                logger.getDependencyDomainPendingBytes();
+        for (int i = 0; i < CAUSAL_DEPENDENCY_DOMAIN_COUNT; i++) {
+            final long value = i < domainPendingFrames.length
+                    ? domainPendingFrames[i]
+                    : 0L;
+            buffer.writeInt((int) Math.min(Integer.MAX_VALUE, value));
+        }
+        for (int i = 0; i < CAUSAL_DEPENDENCY_DOMAIN_COUNT; i++) {
+            buffer.writeLong(i < domainPendingBytes.length
+                    ? domainPendingBytes[i]
+                    : 0L);
+        }
+        buffer.writeLong(logger.getCausalBulkFramesOutbound());
+        buffer.writeLong(logger.getCausalBulkBytesOutbound());
+        buffer.writeLong(logger.getCausalAtomicBundleMaxBytesOutbound());
+        buffer.writeLong(logger.getAdaptiveBytePacingTarget());
+        buffer.writeDouble(logger.getAdaptiveBurstFloorPps());
+        buffer.writeByte(logger.isAdaptiveRttPressure() ? 1 : 0);
+        buffer.writeByte(resumeStateCode(logger.getResumeState()));
+        buffer.writeInt(logger.getResumeValidatedRounds());
     }
 
     boolean readPayload(ByteBuf byteBuf) {
@@ -594,6 +683,29 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             this.orderedHolProbeChannel = byteBuf.readInt();
             this.isRemoteOrderedHolProbeSupported = true;
         }
+        if (this.isRemoteOrderedHolProbeSupported
+                && byteBuf.readableBytes() >= CAUSAL_SCHEDULER_EXTENDED_SIZE) {
+            for (int i = 0; i < dependencyDomainPendingFrames.length; i++) {
+                dependencyDomainPendingFrames[i] = byteBuf.readInt();
+            }
+            for (int i = 0; i < dependencyDomainPendingBytes.length; i++) {
+                dependencyDomainPendingBytes[i] = byteBuf.readLong();
+            }
+            causalBulkFramesOutbound = byteBuf.readLong();
+            causalBulkBytesOutbound = byteBuf.readLong();
+            causalAtomicBundleMaxBytesOutbound = byteBuf.readLong();
+            isRemoteCausalSchedulerSupported = true;
+        }
+        if (this.isRemoteCausalSchedulerSupported
+                && byteBuf.readableBytes()
+                >= ADMISSION_DIAGNOSTICS_EXTENDED_SIZE) {
+            bytePacingTarget = byteBuf.readLong();
+            burstFloorPps = byteBuf.readDouble();
+            rttPressureActive = byteBuf.readUnsignedByte() != 0;
+            resumeState = resumeState(byteBuf.readUnsignedByte());
+            resumeValidatedRounds = byteBuf.readInt();
+            isRemoteAdmissionDiagnosticsSupported = true;
+        }
         return true;
     }
 
@@ -662,6 +774,7 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             case "MTU_BLACK_HOLE" -> 5;
             case "ECN_CE" -> 6;
             case "NON_CONGESTIVE_HIGH_LOSS" -> 7;
+            case "RTT_INFLATION" -> 8;
             default -> 0;
         };
     }
@@ -675,7 +788,30 @@ public class MetricsSynchronizationHandler extends ChannelDuplexHandler {
             case 5 -> "MTU_BLACK_HOLE";
             case 6 -> "ECN_CE";
             case 7 -> "NON_CONGESTIVE_HIGH_LOSS";
+            case 8 -> "RTT_INFLATION";
             default -> "NONE";
+        };
+    }
+
+    private static int resumeStateCode(String value) {
+        return switch (value) {
+            case "VALIDATED" -> 1;
+            case "UNVALIDATED" -> 2;
+            case "SAFE_RETREAT" -> 3;
+            case "CALIBRATING" -> 4;
+            case "WORK_CONSERVING" -> 5;
+            default -> 0;
+        };
+    }
+
+    private static String resumeState(int code) {
+        return switch (code) {
+            case 1 -> "VALIDATED";
+            case 2 -> "UNVALIDATED";
+            case 3 -> "SAFE_RETREAT";
+            case 4 -> "CALIBRATING";
+            case 5 -> "WORK_CONSERVING";
+            default -> "IDLE";
         };
     }
 }

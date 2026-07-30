@@ -11,12 +11,13 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DependencyDomainSchedulerTest {
 
     @Test
-    void strictWorldAndGuardedBulkShareOneFifo() {
+    void strictWorldAndGuardedBulkShareOneCausalFifo() {
         final DependencyDomainScheduler<String> scheduler =
                 new DependencyDomainScheduler<>();
         scheduler.offer(DependencyDomain.STRICT_WORLD, "spawn", 100);
@@ -27,6 +28,42 @@ class DependencyDomainSchedulerTest {
         assertEquals("chunk", scheduler.poll().value());
         assertEquals("metadata", scheduler.poll().value());
         assertTrue(scheduler.isEmpty());
+    }
+
+    @Test
+    void eligiblePollLeavesBackpressuredDomainsQueued() {
+        final DependencyDomainScheduler<String> scheduler =
+                new DependencyDomainScheduler<>();
+        scheduler.offer(DependencyDomain.GUARDED_BULK, "chunk", 100);
+        scheduler.offer(DependencyDomain.STRICT_WORLD, "state", 100);
+        scheduler.offer(DependencyDomain.INDEPENDENT_CONTROL, "control", 100);
+        scheduler.offer(DependencyDomain.EPHEMERAL_EFFECT, "effect", 100);
+
+        assertTrue(scheduler.has(domain ->
+                domain == DependencyDomain.INDEPENDENT_CONTROL
+                        || domain == DependencyDomain.EPHEMERAL_EFFECT
+        ));
+        assertEquals(
+                "control",
+                scheduler.poll(domain ->
+                        domain == DependencyDomain.INDEPENDENT_CONTROL
+                                || domain == DependencyDomain.EPHEMERAL_EFFECT
+                ).value()
+        );
+        assertEquals(
+                "effect",
+                scheduler.poll(domain ->
+                        domain == DependencyDomain.INDEPENDENT_CONTROL
+                                || domain == DependencyDomain.EPHEMERAL_EFFECT
+                ).value()
+        );
+        assertNull(scheduler.poll(domain ->
+                domain == DependencyDomain.INDEPENDENT_CONTROL
+                        || domain == DependencyDomain.EPHEMERAL_EFFECT
+        ));
+        assertEquals(2, scheduler.size());
+        assertEquals("chunk", scheduler.poll().value());
+        assertEquals("state", scheduler.poll().value());
     }
 
     @Test

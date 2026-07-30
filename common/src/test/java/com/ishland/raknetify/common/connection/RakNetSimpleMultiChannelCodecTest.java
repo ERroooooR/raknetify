@@ -25,6 +25,7 @@
 package com.ishland.raknetify.common.connection;
 
 import com.ishland.raknetify.common.Constants;
+import com.ishland.raknetify.common.connection.multichannel.DependencyDomain;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
@@ -816,6 +817,165 @@ class RakNetSimpleMultiChannelCodecTest {
         assertTrue(closingPromise.cause() instanceof CancellationException);
         assertFalse(channel.isOpen());
         assertThrows(CancellationException.class, channel::checkException);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void negotiatedIndependentControlReceivesTransportPreemptionPriority() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                RakNetSimpleMultiChannelCodec.OverrideResult.classify(
+                        DependencyDomain.INDEPENDENT_CONTROL,
+                        -1
+                )
+        );
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        assertTrue(channel.writeOutbound(
+                Unpooled.wrappedBuffer(new byte[]{1, 10})
+        ));
+        channel.runPendingTasks();
+
+        final FrameData control = channel.readOutbound();
+        try {
+            assertEquals(1, control.getOrderChannel());
+            assertEquals(
+                    DependencyDomain.INDEPENDENT_CONTROL.transportPriority(),
+                    control.getPriority()
+            );
+            assertTrue(
+                    control.getPriority()
+                            > DependencyDomain.GUARDED_BULK
+                            .transportPriority()
+            );
+        } finally {
+            control.release();
+        }
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void guardedBulkUsesChannelSixAndStrictWatermarkPreventsOvertake() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                buf.getUnsignedByte(buf.readerIndex()) == 1
+                        ? RakNetSimpleMultiChannelCodec.OverrideResult.classify(
+                                DependencyDomain.GUARDED_BULK,
+                                7
+                        )
+                        : RakNetSimpleMultiChannelCodec.OverrideResult.strict()
+        );
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+        assertTrue(codec.isGuardedBulkWatermarkEnabled());
+
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{1, 10})
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{2, 20})
+        );
+        channel.pipeline().flush();
+        channel.runPendingTasks();
+
+        FrameData bulk = null;
+        FrameData strict = null;
+        FrameData frame;
+        while ((frame = channel.readOutbound()) != null) {
+            if (frame.getOrderChannel() == 6) {
+                bulk = frame;
+            } else if (frame.getOrderChannel() == 7) {
+                strict = frame;
+            } else {
+                frame.release();
+            }
+        }
+        assertTrue(bulk != null);
+        assertTrue(strict != null);
+        assertEquals(
+                DependencyDomain.GUARDED_BULK.transportPriority(),
+                bulk.getPriority()
+        );
+        assertEquals(
+                DependencyDomain.STRICT_WORLD.transportPriority(),
+                strict.getPriority()
+        );
+
+        final ByteBuf bulkPayload = bulk.createData().skipBytes(1);
+        try {
+            assertTrue(CausalTransportProtocol.isBulkDependencyFrame(
+                    bulkPayload
+            ));
+            final var decoded =
+                    CausalTransportProtocol.decodeGameplayFrame(bulkPayload);
+            try {
+                assertEquals(1, decoded.dependencySequence());
+            } finally {
+                decoded.packets().forEach(ByteBuf::release);
+            }
+        } finally {
+            bulkPayload.release();
+        }
+        final ByteBuf strictPayload = strict.createData().skipBytes(1);
+        try {
+            final var decoded =
+                    CausalTransportProtocol.decodeGameplayFrame(strictPayload);
+            try {
+                assertEquals(
+                        CausalTransportProtocol.DependencyKind.STRICT,
+                        decoded.dependencyKind()
+                );
+                assertEquals(1, decoded.dependencySequence());
+            } finally {
+                decoded.packets().forEach(ByteBuf::release);
+            }
+        } finally {
+            strictPayload.release();
+        }
+
+        assertFalse(channel.writeInbound(strict));
+        assertTrue(channel.writeInbound(bulk));
+        assertPacket(channel.readInbound(), 1, 10);
+        assertPacket(channel.readInbound(), 2, 20);
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    void strictSchedulingFifoPreventsLaterBulkFromOvertaking() {
+        final RakNetSimpleMultiChannelCodec codec =
+                new RakNetSimpleMultiChannelCodec(0xfd);
+        codec.addHandler((buf, suppressWarning) ->
+                buf.getUnsignedByte(buf.readerIndex()) == 1
+                        ? RakNetSimpleMultiChannelCodec.OverrideResult.classify(
+                                DependencyDomain.GUARDED_BULK,
+                                7
+                        )
+                        : RakNetSimpleMultiChannelCodec.OverrideResult.strict()
+        );
+        final EmbeddedChannel channel = new EmbeddedChannel(codec);
+        negotiateCausalCapabilities(channel);
+
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{2, 20})
+        );
+        channel.pipeline().write(
+                Unpooled.wrappedBuffer(new byte[]{1, 10})
+        );
+        channel.pipeline().flush();
+        channel.runPendingTasks();
+
+        final FrameData strict = channel.readOutbound();
+        final FrameData bulk = channel.readOutbound();
+        try {
+            assertEquals(7, strict.getOrderChannel());
+            assertEquals(6, bulk.getOrderChannel());
+        } finally {
+            strict.release();
+            bulk.release();
+        }
         assertFalse(channel.finishAndReleaseAll());
     }
 

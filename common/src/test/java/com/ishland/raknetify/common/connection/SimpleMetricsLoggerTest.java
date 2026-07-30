@@ -60,6 +60,7 @@ class SimpleMetricsLoggerTest {
         logger.targetedFecRepair(2, 384);
         logger.targetedFecRecovered(1);
         logger.adaptiveBytePacingRate(512000L);
+        logger.adaptiveAdmissionDiagnostics(768000L, 250D, true);
         logger.fragmentReassemblyPending(2, 8192L, 5_000_000L);
         logger.fragmentReassemblyComplete(4096, 8_000_000L);
         logger.orderedQueuePending(3, 6_000_000L);
@@ -149,6 +150,9 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"targeted_fec_bytes\":384"));
         assertTrue(line.contains("\"targeted_fec_recovered\":1"));
         assertTrue(line.contains("\"byte_pacing_bps\":512000"));
+        assertTrue(line.contains("\"byte_pacing_target_bps\":768000"));
+        assertTrue(line.contains("\"burst_floor_pps\":250.000"));
+        assertTrue(line.contains("\"rtt_pressure_active\":true"));
         assertTrue(line.contains("\"validated_path_bps\":1048576"));
         assertTrue(line.contains("\"delivery_sample_application_limited\":true"));
         assertTrue(line.contains("\"resume_state\":\"UNVALIDATED\""));
@@ -196,6 +200,12 @@ class SimpleMetricsLoggerTest {
         assertTrue(line.contains("\"ack_repeat_delay_ns\":10000000"));
         assertTrue(line.contains("\"remote_ack_policy_supported\":false"));
         assertTrue(line.contains("\"remote_ordered_hol_probe_supported\":false"));
+        assertTrue(line.contains(
+                "\"remote_causal_scheduler_supported\":false"
+        ));
+        assertTrue(line.contains(
+                "\"remote_admission_diagnostics_supported\":false"
+        ));
         assertTrue(line.contains("\"application_limited\":false"));
         assertTrue(line.contains("\"backlog_state\":\"BULK\""));
         assertTrue(line.contains("\"backlog_age_ns\":150000000"));

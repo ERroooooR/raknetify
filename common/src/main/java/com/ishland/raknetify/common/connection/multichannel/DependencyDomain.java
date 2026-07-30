@@ -7,23 +7,36 @@ package com.ishland.raknetify.common.connection.multichannel;
 /**
  * Application-level dependency domains for Minecraft game packets.
  *
- * <p>The strict and guarded-bulk domains intentionally share one scheduling
- * class and one RakNet order channel. Guarded bulk is classification and
- * observability only until an explicit commit dependency exists.</p>
+ * <p>Guarded bulk shares the strict scheduling class so producer order is
+ * retained before the transport split. It may use its dedicated RakNet order
+ * channel only after the peer negotiates the bulk-watermark protocol;
+ * otherwise callers must send it as strict world state.</p>
  */
 public enum DependencyDomain {
 
-    STRICT_WORLD(7, SchedulingClass.STRICT),
-    INDEPENDENT_CONTROL(1, SchedulingClass.CONTROL),
-    EPHEMERAL_EFFECT(4, SchedulingClass.EFFECT),
-    GUARDED_BULK(7, SchedulingClass.STRICT);
+    // Strict frames retain the same transport priority as guarded bulk. A
+    // strict frame may carry a watermark for an older bulk frame, so letting
+    // it consume bandwidth first would only delay the dependency it awaits.
+    STRICT_WORLD(7, SchedulingClass.STRICT, 1),
+    INDEPENDENT_CONTROL(1, SchedulingClass.CONTROL, 4),
+    EPHEMERAL_EFFECT(4, SchedulingClass.EFFECT, 3),
+    // The wire channel is separate, but the scheduling class intentionally
+    // remains STRICT. This preserves strict-before-bulk order; the reciprocal
+    // bulk-before-strict direction is protected by the negotiated watermark.
+    GUARDED_BULK(6, SchedulingClass.STRICT, 1);
 
     private final int orderChannel;
     private final SchedulingClass schedulingClass;
+    private final int transportPriority;
 
-    DependencyDomain(int orderChannel, SchedulingClass schedulingClass) {
+    DependencyDomain(
+            int orderChannel,
+            SchedulingClass schedulingClass,
+            int transportPriority
+    ) {
         this.orderChannel = orderChannel;
         this.schedulingClass = schedulingClass;
+        this.transportPriority = transportPriority;
     }
 
     public int orderChannel() {
@@ -32,6 +45,18 @@ public enum DependencyDomain {
 
     SchedulingClass schedulingClass() {
         return schedulingClass;
+    }
+
+    /**
+     * Local-only priority used after a large frame has been fragmented.
+     *
+     * <p>This is deliberately separate from the wire order channel. The
+     * receiver still applies ordinary RakNet reliability and the negotiated
+     * causal watermark; priority only controls which already-queued fragment
+     * gets admitted to the next datagram.</p>
+     */
+    public int transportPriority() {
+        return transportPriority;
     }
 
     /**

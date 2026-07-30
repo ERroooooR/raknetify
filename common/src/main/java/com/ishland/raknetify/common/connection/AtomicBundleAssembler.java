@@ -56,6 +56,28 @@ final class AtomicBundleAssembler {
             int epoch,
             boolean epochFraming
     ) {
+        return accept(
+                allocator,
+                packet,
+                promise,
+                delimiter,
+                epoch,
+                epochFraming,
+                false,
+                0
+        );
+    }
+
+    CompletedBundle accept(
+            ByteBufAllocator allocator,
+            ByteBuf packet,
+            ChannelPromise promise,
+            boolean delimiter,
+            int epoch,
+            boolean epochFraming,
+            boolean bulkDependencyFraming,
+            int requiredBulkSequence
+    ) {
         if (!open && !delimiter) {
             throw new IllegalStateException("Cannot start an atomic bundle without a delimiter");
         }
@@ -84,7 +106,14 @@ final class AtomicBundleAssembler {
         final List<ChannelPromise> completedPromises = new ArrayList<>(promises);
         reset();
         try {
-            final ByteBuf payload = epochFraming
+            final ByteBuf payload = bulkDependencyFraming
+                    ? CausalTransportProtocol.encodeDependencyAtomicBundle(
+                            allocator,
+                            epoch,
+                            requiredBulkSequence,
+                            completedPackets
+                    )
+                    : epochFraming
                     ? CausalTransportProtocol.encodeAtomicBundle(
                             allocator,
                             epoch,

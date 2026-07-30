@@ -44,9 +44,12 @@ import java.util.Objects;
  */
 final class DependencyDomainFrameScheduler {
 
+    private static final int MAX_DRAIN_FRAMES = 64;
+    private static final long MAX_DRAIN_BYTES = 64L * 1024L;
     private final DependencyDomainScheduler<PendingFrame> scheduler;
     private final DrainTaskSubmitter drainTaskSubmitter;
     private boolean drainScheduled;
+    private boolean backpressureBypassUsed;
 
     DependencyDomainFrameScheduler(int maxFrames, long maxBytes) {
         this(
@@ -74,8 +77,22 @@ final class DependencyDomainFrameScheduler {
             FrameData frame,
             ChannelPromise promise
     ) {
+        schedule(ctx, domain, domain, frame, promise);
+    }
+
+    void schedule(
+            ChannelHandlerContext ctx,
+            DependencyDomain metricDomain,
+            DependencyDomain schedulingDomain,
+            FrameData frame,
+            ChannelPromise promise
+    ) {
         final int bytes = frame.getDataSize();
-        if (!scheduler.offer(domain, new PendingFrame(frame, promise, bytes), bytes)) {
+        if (!scheduler.offer(
+                schedulingDomain,
+                new PendingFrame(frame, promise, bytes, metricDomain),
+                bytes
+        )) {
             final CorruptedFrameException exception = new CorruptedFrameException(
                     "Dependency-domain scheduler exceeded its bound "
                             + "(frames=" + scheduler.size()
@@ -95,7 +112,7 @@ final class DependencyDomainFrameScheduler {
             return;
         }
 
-        recordQueued(ctx, domain, bytes);
+        recordQueued(ctx, metricDomain, bytes);
         try {
             scheduleDrain(ctx);
         } catch (Throwable throwable) {
@@ -106,14 +123,87 @@ final class DependencyDomainFrameScheduler {
     }
 
     void drain(ChannelHandlerContext ctx) {
+        drain(ctx, Integer.MAX_VALUE, Long.MAX_VALUE);
+    }
+
+    /**
+     * Admits one bounded batch to RakNet's fragmentation/reliability pipeline.
+     *
+     * <p>Keeping the remainder here is important: RakNet's own writability
+     * signal reflects its reliable frame queue, while Minecraft commonly
+     * continues writing after that signal turns false. Without this boundary
+     * a chunk burst can fill the transport queue before a later independent
+     * control frame has a chance to preempt it.</p>
+     */
+    void drainAvailable(ChannelHandlerContext ctx) {
+        final boolean writable = isTransportWritable(ctx);
+        if (writable) {
+            backpressureBypassUsed = false;
+        } else if (backpressureBypassUsed) {
+            return;
+        }
+        final long bytesBefore = scheduler.bytes();
+        drain(
+                ctx,
+                MAX_DRAIN_FRAMES,
+                MAX_DRAIN_BYTES,
+                writable
+                        ? domain -> true
+                        : DependencyDomainFrameScheduler::mayBypassBackpressure
+        );
+        if (!writable && scheduler.bytes() != bytesBefore) {
+            // One bounded high-priority escape batch is enough to put control
+            // fragments into RakNet's priority queue. Waiting for the next
+            // writable edge prevents a particle/control burst from bypassing
+            // transport backpressure without limit.
+            backpressureBypassUsed = true;
+        }
+    }
+
+    void resume(ChannelHandlerContext ctx) {
+        final boolean writable = isTransportWritable(ctx);
+        if (writable) {
+            backpressureBypassUsed = false;
+        }
+        if (!scheduler.isEmpty() && (writable
+                || (!backpressureBypassUsed
+                && hasBackpressureBypassFrame()))) {
+            scheduleDrain(ctx);
+        }
+    }
+
+    private void drain(
+            ChannelHandlerContext ctx,
+            int maxFrames,
+            long maxBytes
+    ) {
+        drain(ctx, maxFrames, maxBytes, domain -> true);
+    }
+
+    private void drain(
+            ChannelHandlerContext ctx,
+            int maxFrames,
+            long maxBytes,
+            java.util.function.Predicate<DependencyDomain> eligible
+    ) {
         DependencyDomainScheduler.Scheduled<PendingFrame> scheduled;
-        while ((scheduled = scheduler.poll()) != null) {
+        int frames = 0;
+        long bytes = 0L;
+        while (frames < maxFrames
+                && bytes < maxBytes
+                && (scheduled = scheduler.poll(eligible)) != null) {
             final PendingFrame pending = scheduled.value();
             try {
                 ctx.write(pending.frame(), pending.promise());
-                recordSent(ctx, scheduled.domain(), pending.bytes());
+                recordSent(ctx, pending.metricDomain(), pending.bytes());
+                frames++;
+                bytes += pending.bytes();
             } catch (Throwable throwable) {
-                recordDiscarded(ctx, scheduled.domain(), pending.bytes());
+                recordDiscarded(
+                        ctx,
+                        pending.metricDomain(),
+                        pending.bytes()
+                );
                 ReferenceCountUtil.safeRelease(pending.frame());
                 pending.promise().tryFailure(throwable);
                 fail(ctx, throwable);
@@ -128,7 +218,7 @@ final class DependencyDomainFrameScheduler {
         DependencyDomainScheduler.Scheduled<PendingFrame> scheduled;
         while ((scheduled = scheduler.poll()) != null) {
             final PendingFrame pending = scheduled.value();
-            recordDiscarded(ctx, scheduled.domain(), pending.bytes());
+            recordDiscarded(ctx, pending.metricDomain(), pending.bytes());
             ReferenceCountUtil.safeRelease(pending.frame());
             pending.promise().tryFailure(cause);
         }
@@ -151,8 +241,12 @@ final class DependencyDomainFrameScheduler {
             drainTaskSubmitter.submit(ctx, () -> {
                 drainScheduled = false;
                 if (!scheduler.isEmpty()) {
-                    drain(ctx);
-                    ctx.flush();
+                    final long bytesBefore = scheduler.bytes();
+                    drainAvailable(ctx);
+                    if (scheduler.bytes() != bytesBefore) {
+                        ctx.flush();
+                    }
+                    resume(ctx);
                 }
             });
         } catch (Throwable throwable) {
@@ -202,10 +296,24 @@ final class DependencyDomainFrameScheduler {
         return null;
     }
 
+    private static boolean isTransportWritable(ChannelHandlerContext ctx) {
+        return !Boolean.FALSE.equals(ctx.channel().attr(RakNet.WRITABLE).get());
+    }
+
+    private boolean hasBackpressureBypassFrame() {
+        return scheduler.has(DependencyDomainFrameScheduler::mayBypassBackpressure);
+    }
+
+    private static boolean mayBypassBackpressure(DependencyDomain domain) {
+        return domain == DependencyDomain.INDEPENDENT_CONTROL
+                || domain == DependencyDomain.EPHEMERAL_EFFECT;
+    }
+
     private record PendingFrame(
             FrameData frame,
             ChannelPromise promise,
-            int bytes
+            int bytes,
+            DependencyDomain metricDomain
     ) {
     }
 
