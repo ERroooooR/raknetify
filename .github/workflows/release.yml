@@ -1,0 +1,76 @@
+name: Release master build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - uses: gradle/actions/wrapper-validation@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and test
+        run: ./gradlew build
+      - name: Collect distributable jars
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          for module in fabric velocity bungee; do
+            mapfile -t jars < <(find "$module/build/libs" -maxdepth 1 -type f -name '*-all.jar')
+            if [ "${#jars[@]}" -eq 0 ]; then
+              echo "No distributable jar found for $module" >&2
+              exit 1
+            fi
+            cp "${jars[@]}" release-assets/
+          done
+          (cd release-assets && sha256sum *.jar > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: master-release-assets
+          path: release-assets/
+          if-no-files-found: error
+      - name: Publish experimental GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          tag="master-build-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:7}"
+          cat > release-notes.md <<EOF_NOTES
+          Experimental build from master commit ${GITHUB_SHA}.
+
+          This unofficial fork targets poor network conditions and ISP restrictions. Substantial AI-generated and AI-assisted content is included; stability is not guaranteed.
+
+          NeoForge via Sinytra Connector and Velocity are usable. Other platforms are expected to work but remain untested. The Fabric jar is loaded through Connector on NeoForge; it is not a native NeoForge mod.
+
+          Download the jar for your platform. Report problems to this repository with telemetry from logs/raknetify-metrics.jsonl (enable -Draknetify.metricsJsonl=true).
+
+          Build: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF_NOTES
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "Experimental master build ${GITHUB_SHA:0:7}" \
+              --notes-file release-notes.md \
+              --prerelease
+          fi
