@@ -28,6 +28,65 @@ The following mechanisms are present in the current code and pinned `netty-rakne
 
 Implementation entry points: [transport configuration](common/src/main/java/com/ishland/raknetify/common/connection/RakNetConnectionUtil.java), [Fabric integration](fabric/src/main/java/com/ishland/raknetify/fabric/mixin), [transport submodule](netty-raknet), and [recovery design and switches](docs/ADAPTIVE_RECOVERY_ROADMAP.md). The design document includes development directions; not every proposal constitutes completed performance validation.
 
+## How the network optimizations work
+
+This explanation follows the pinned transport submodule commit `e7f8627`. These are implementation policies and thresholds, not measurements covering every mainland Chinese network or latency/throughput guarantees. PPS here describes transport datagram pacing; raising its ceiling does not create bandwidth.
+
+### 1. Adapt to feedback instead of treating every loss as congestion
+
+The controller tracks ACK and loss events in ten one-second buckets and combines them with smoothed/minimum RTT, consecutive losses and packet sizes. `QUEUE` represents queueing signals such as inflated RTT with loss. With at least 64 samples, loss of at least 3% and no substantial RTT inflation, it can classify `RATE_LIMIT`; at least three consecutive losses can classify `BURST`; other isolated losses become `RANDOM`. Conditions have precedence. **These are heuristics, not proof that a carrier is applying a particular QoS policy.**
+
+For a new rate response, `RATE_LIMIT` multiplies packet pacing by 0.70, `QUEUE` / `BURST` by 0.75, and other loss branches by 0.85, before limits and burst controls. Repeated feedback within one congestion episode does not repeatedly apply the entire multiplicative reduction, avoiding collapse to the minimum rate. Recovery follows ACK progress; time without feedback is not evidence of recovered capacity.
+
+Source: [AdaptiveTransportController.onLoss / applyLossPacingCeiling](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java).
+
+### 2. Bound packet rate, in-flight data and bulk starts together
+
+Before sending, the controller checks the congestion window (sent but unacknowledged bytes), then packet tokens. The bucket normally holds at most four datagrams, reduced to one under `BURST` / `QUEUE` / `RATE_LIMIT`. Delivery rate, minimum RTT and ACK aggregation inform the window through `STARTUP`, `DRAIN`, `PROBE_BW` and `PROBE_RTT` states. This is the project's model-based implementation, not a claim of full standard BBR implementation.
+
+Chunk synchronization and compressed batches can produce large queues. Queued plus in-flight bytes determine entry into `BULK`: the entry threshold scales with the congestion window and is capped at 48 KiB; the exit threshold is capped at 16 KiB. The current drain target is **two seconds**. Missing it does not justify unlimited acceleration based on queue age; validated capacity is consulted instead. RTT pressure or active severe-loss signals limit burst acceleration.
+
+The byte-admission path additionally smooths starts with byte tokens. Its initial admission rate is normally constrained by both 384 KiB/s and the packet-rate estimate, with adjustments when retained capacity exists. **Not all BULK traffic always passes this byte gate:** the initial one-minute calibration window or healthy probing conditions can select a `WORK_CONSERVING` path that skips it. Packet pacing and congestion-window checks still apply. The default `2000 PPS` is a configured ceiling, not a constant send rate.
+
+Source: [sendBudget / updateBurstDrain / workConservingBulk](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java).
+
+### 3. Retain validated capacity across idle periods
+
+Delivery estimation bounds inflated ACK-compression samples. Low samples caused by an application having too little data to send do not directly lower the retained maximum bandwidth. On a healthy path, validated capacity from the last five minutes can seed a restart; older retained capacity is tried at half rate and validated through two rounds of acknowledged bytes. Loss during validation enters `SAFE_RETREAT`. This is history within the current connection, not a bandwidth result persisted across connections.
+
+Source: [updateDeliveryRate / startBurstAdmission / updateResumeValidation](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java).
+
+### 4. Separate short reordering, lost feedback and data needing retransmission
+
+- **NACK grace:** Gaps of only one or two FrameSets receive an RTT/jitter-derived 4–25 ms wait; larger gaps recover immediately. If at least 88% of the latest 8–32 outcomes expire rather than arrive reordered, grace is temporarily bypassed, with one deferred probe allowed after at least two seconds.
+- **ACK/NACK protection:** Three duplicate reliable FrameSets within a second activate ACK protection for at least two seconds. ACK ranges are coalesced and repeated once after 5–20 ms. Active ACK protection or NACK-grace bypass can also coalesce and repeat NACKs; arriving packets remove their pending repeat ranges. Healthy traffic does not permanently double ACKs.
+- **RACK-style inference:** Acknowledgment of newer transmissions provides evidence that older data was lost. The RTT-based reordering window starts at 1.25 times RTT and can widen to twice RTT on signs of a mistaken inference, reducing unnecessary retransmissions.
+- **PTO probes:** Without new ACKs, the base timeout is `RTT + max(1 ms, 4 × RTT standard deviation) + retryDelay`, followed by bounded exponential backoff. Probes prefer data that may unblock ordered delivery and still require a send budget. A probe timeout does not itself establish loss of the entire flight.
+
+Source: [ReliabilityHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/ReliabilityHandler.java).
+
+### 5. Target blocked data while bounding repair overhead
+
+**Normal FEC** requires extension negotiation and is considered only for random loss between 0.5% and 3%, without BULK draining or RTT-based queue inflation. After feedback from at least 64 groups, a yield below 0.01 recovered packets per group suppresses normal FEC for ten seconds to avoid continuously sending ineffective redundancy.
+
+**Targeted FEC** follows a separate path: four datagrams selected from a rolling cache of up to eight form a repair group with one Reed–Solomon parity shard, prioritizing a peer-reported blocked target. Candidates need an ordered retransmission history and a score of at least two for “retry count + RTTs elapsed since transmission.” Parity bytes per RTT are capped at the current MTU (with a code floor of 256 bytes), and the congestion window is checked. This is not a global increase in FEC redundancy and does not use normal FEC's random-loss trigger.
+
+When the application queue is empty, additional recovery can resend reliable data already retransmitted but still unacknowledged. Each logical item receives at most one such attempt per application-limited period, sharing a cooldown with PTO. Peer-reported ordered blocking can also trigger an exact probe: the blocking age must reach `max(250 ms, 2 × RTT)`, repeated probes of the same target are at least `max(500 ms, RTT)` apart, and feedback is retained for three seconds.
+
+Implementation boundary: with adaptation enabled, the common eligibility check for additional recovery and targeted FEC excludes BULK, RTT inflation, `QUEUE` and `MTU_BLACK_HOLE`; **it does not independently exclude `RATE_LIMIT` or `BURST`**. Budgets and observed metrics still matter. The design must not be described as disabling repair in every rate-limited scenario.
+
+Sources: [LimitedFecHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/LimitedFecHandler.java), [ReliabilityHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/ReliabilityHandler.java), [allowsApplicationLimitedRecovery](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java).
+
+### 6. MTU, coalescing and DSCP address different problems
+
+DPLPMTUD sends candidate payload probes and waits for confirmation, using a roughly binary search and narrowing the range after up to three timeouts per candidate. A qualifying large-packet black hole returns to a base payload no greater than 1200 bytes. Normal initial MTU is 1400 and the default probe ceiling is 1452. A larger initial MTU selected by `raknetl;` is not forcibly reduced to 1452 by that default ceiling, so it should not be used without validation. MTU probing requires negotiated v12 extensions and cannot bypass blocked UDP.
+
+Small-write coalescing defaults to 500 microseconds, rising to at least 1500 under `RATE_LIMIT` and 750 under `QUEUE` / `BURST`, trading a small wait for fewer packets. This differs from external ZSTD's millisecond-scale batching, which can still hide packet boundaries and cause head-of-line blocking on a single ordered channel.
+
+Static IP TOS defaults to `0xA0` (CS5). Adaptive DSCP is off by default. When enabled, aggregated votes can request AF41 or CS0 with at least 16 votes, one side strictly exceeding twice the other, and a 30-second cooldown. Vote counters and switching state are static within the controller class, not independent per-player markings. Actual effect depends on the socket, operating system and network equipment.
+
+Sources: [DplpmtudController](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/DplpmtudController.java), [PathMtuDiscoveryHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/PathMtuDiscoveryHandler.java), [smallWriteCoalesceMicros / applyDscp](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java).
+
 ## Installation and connection
 
 1. Obtain the appropriate version from **this repository's** [Releases](https://github.com/ERroooooR/raknetify/releases), if available, or [Actions artifacts](https://github.com/ERroooooR/raknetify/actions/workflows/build.yml). Upstream download channels do not represent builds of this fork.

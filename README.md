@@ -28,6 +28,65 @@
 
 实现入口：[传输配置](common/src/main/java/com/ishland/raknetify/common/connection/RakNetConnectionUtil.java)、[Fabric 适配](fabric/src/main/java/com/ishland/raknetify/fabric/mixin)、[传输子模块](netty-raknet)、[恢复设计与开关](docs/ADAPTIVE_RECOVERY_ROADMAP.md)。设计文档包含演进方向，不能将所有设想视为已完成的性能验证。
 
+## 网络优化如何工作
+
+以下说明对应本分支固定的传输子模块提交 `e7f8627`。这些是代码中的控制策略与阈值，不是对中国大陆所有线路的实测结论，也不是延迟或吞吐保证。这里的 PPS 指传输数据报发送节奏；增加 PPS 上限不等于增加可用带宽。
+
+### 1. 根据反馈调速，而不是把所有丢包都当作拥塞
+
+控制器以 10 个一秒桶统计 ACK 与丢失事件，并结合平滑 RTT、最小 RTT、连续丢失及报文大小分类。`QUEUE` 表示 RTT 膨胀并伴随丢包等排队信号；至少 64 个样本、丢失比例达到 3% 且 RTT 未明显膨胀时，可判为 `RATE_LIMIT`；连续至少 3 次丢失可判为 `BURST`；其他孤立丢失归为 `RANDOM`。这些条件有判定优先级，**分类是启发式推断，无法证明运营商实施了某种 QoS 策略**。
+
+发生一次新的调速响应时，`RATE_LIMIT` 将包速率乘以 0.70，`QUEUE` / `BURST` 乘以 0.75，其余丢失分支乘以 0.85，再应用上下限及突发控制。同一拥塞事件中的重复反馈不会反复执行整套乘法降速，以免把速率压到下限。恢复由 ACK 进展驱动，不能把长时间没有反馈当作带宽恢复证据。
+
+源码：[AdaptiveTransportController.onLoss / applyLossPacingCeiling](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java)。
+
+### 2. 同时控制包速率、在途数据和大批次启动
+
+发送前先检查拥塞窗口（已发送但未确认的字节数），再检查包令牌；正常情况下令牌桶最多积累 4 个数据报，`BURST` / `QUEUE` / `RATE_LIMIT` 时收紧到 1 个。窗口根据交付速率、最小 RTT 和 ACK 聚集量调整，包含 `STARTUP`、`DRAIN`、`PROBE_BW`、`PROBE_RTT` 状态。这是本项目的模型化实现，不应等同于完整标准 BBR。
+
+区块同步或压缩合批会形成大队列。代码以“排队 + 在途字节”判断是否进入 `BULK`：进入阈值随拥塞窗口变化且不超过 48 KiB，退出阈值不超过 16 KiB。当前排空目标为 **2 秒**；超过目标后不能仅因队列变老就无限加速，而会参考已验证容量。RTT 压力或仍活跃的严重丢包信号会限制突发提速。
+
+受字节准入约束的路径还使用字节令牌平滑启动；初始准入速率通常受 384 KiB/s 和当前包速率估算共同约束，已有容量记录时可调整。**并非所有 BULK 流量始终经过这层字节门控**：最初一分钟的校准窗口或满足健康探测条件时可走 `WORK_CONSERVING` 路径，跳过该门控，但包节奏与拥塞窗口检查仍存在。`2000 PPS` 是默认配置上限，不是恒定发送速率。
+
+源码：[sendBudget / updateBurstDrain / workConservingBulk](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java)。
+
+### 3. 保留已验证容量，避免空闲后重新从低速起步
+
+交付速率估算限制 ACK 聚集造成的虚高样本；应用没有足够数据发送时产生的低速样本不会直接压低保留的最大带宽。健康路径上，5 分钟内的已验证容量可用于恢复发送；较旧的记录先以一半速率尝试，并通过两轮字节 ACK 验证。验证期间出现丢失会转入 `SAFE_RETREAT`。这是当前连接内的历史状态，不是跨连接保存的测速结果。
+
+源码：[updateDeliveryRate / startBurstAdmission / updateResumeValidation](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java)。
+
+### 4. 区分短乱序、反馈丢失与真正需要重传的数据
+
+- **NACK 宽限：** 仅缺少 1–2 个 FrameSet 时等待 RTT / 抖动相关的 4–25 ms；更大的缺口直接恢复。最近 8–32 次结果中至少 88% 为宽限到期而非乱序到达时，暂时绕过等待，至少 2 秒后允许一次延迟探测。
+- **ACK/NACK 保护：** 一秒内收到 3 个重复可靠 FrameSet 后，ACK 保护至少维持 2 秒；合并 ACK 范围并在 5–20 ms 后额外重复一次。ACK 保护或 NACK 宽限绕过活跃时，也可合并并重复 NACK；缺失报文已到达则取消对应待重复范围。健康流量不会永久双发 ACK。
+- **RACK 风格推断：** 用更新发送的数据已被确认这一事实推断旧数据丢失。乱序时间窗基于 RTT，基础为 1.25 倍，出现误判迹象时可扩大至 2 倍，减少无谓重传。
+- **PTO 探测：** 没有新 ACK 时，按 `RTT + max(1 ms, 4 × RTT 标准差) + retryDelay` 计算基础超时，再进行有上限的指数退避。优先探测可能解除有序阻塞的数据，仍受发送预算约束；探测超时本身不等于整批数据已经丢失。
+
+源码：[ReliabilityHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/ReliabilityHandler.java)。
+
+### 5. 把修复预算用于阻塞的数据，限制冗余开销
+
+**普通 FEC** 需要扩展协商，并仅在随机丢失比例为 0.5%–3%、没有 BULK 排空且没有 RTT 排队膨胀时考虑启用。接收端反馈至少 64 组、恢复收益低于每组 0.01 个恢复报文时，普通 FEC 暂停 10 秒，避免持续发送几乎无效的冗余。
+
+**定向 FEC** 是另一条路径：从最多 8 个近期数据报中选 4 个组成滚动修复组，生成 1 个 Reed–Solomon 校验分片，优先考虑对端指出的阻塞目标。候选必须已有有序重传记录，且“重试次数 + 自发送以来经过的 RTT 数”达到 2；每 RTT 的校验字节预算不超过当前 MTU（代码下限为 256 字节），并检查拥塞窗口。它不等同于全局提高 FEC 比例，也不沿用普通 FEC 的随机丢失触发条件。
+
+应用队列为空时，额外恢复可以为已重传、仍未确认的可靠数据提供一次补发机会；每个逻辑数据在同一应用受限阶段最多一次，并与 PTO 共享冷却。对端有序阻塞反馈还可触发精确探测：阻塞年龄至少为 `max(250 ms, 2 × RTT)`，同一目标间隔至少为 `max(500 ms, RTT)`，反馈保留 3 秒。
+
+注意实现边界：额外恢复与定向 FEC 的公共许可条件在自适应开启时排除 BULK、RTT 膨胀、`QUEUE` 和 `MTU_BLACK_HOLE`，**并不单独排除 `RATE_LIMIT` 或 `BURST`**；仍需结合预算及实际指标评估开销。不能把设计意图描述为“任何限速场景都会禁用修复”。
+
+源码：[LimitedFecHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/LimitedFecHandler.java)、[ReliabilityHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/ReliabilityHandler.java)、[allowsApplicationLimitedRecovery](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java)。
+
+### 6. MTU、合包与 DSCP 各自解决不同问题
+
+DPLPMTUD 对候选载荷发送探测并等待确认，以近似二分方式搜索，每个候选最多 3 次超时后收缩搜索范围；满足大包黑洞判定条件时退到基准载荷（不高于 1200 字节）。正常初始 MTU 为 1400，默认探测上限 1452；`raknetl;` 的较大初始 MTU 不会被这个默认上限强制压到 1452，因此不宜未经验证使用。MTU 探测依赖 v12 扩展协商，不能绕过 UDP 阻断。
+
+小写入合并默认 500 微秒，在 `RATE_LIMIT` 时至少 1500 微秒，在 `QUEUE` / `BURST` 时至少 750 微秒，以少量等待换取更少报文。它与外部 ZSTD 的毫秒级压缩合批不同；后者仍可能隐藏包边界并导致单有序通道的队头阻塞。
+
+静态 IP TOS 默认 `0xA0`（CS5）。自适应 DSCP 默认关闭；开启后聚合投票，至少 16 票、某侧严格超过另一侧两倍且满足 30 秒冷却时，尝试切换为 AF41 或 CS0。投票计数与切换状态在控制器类中静态共享，并非逐玩家独立标记；是否生效取决于 socket、操作系统和网络设备。
+
+源码：[DplpmtudController](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/DplpmtudController.java)、[PathMtuDiscoveryHandler](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/PathMtuDiscoveryHandler.java)、[smallWriteCoalesceMicros / applyDscp](https://github.com/RelativityMC/netty-raknet/blob/e7f8627521798289db32a9ded8e5bfc89c74334b/common/src/main/java/network/ycc/raknet/pipeline/AdaptiveTransportController.java)。
+
 ## 安装与连接
 
 1. 从**本仓库**的 [Releases](https://github.com/ERroooooR/raknetify/releases)（如有发布）或 [Actions 构建产物](https://github.com/ERroooooR/raknetify/actions/workflows/build.yml)获取对应版本。上游下载渠道不代表本分支构建。
