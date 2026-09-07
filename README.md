@@ -1,4 +1,4 @@
-# Raknetify — 中国大陆网络适配分支
+# Raknetify — 恶劣网络与运营商限制适配分支
 
 **简体中文** | [English](README.en.md)
 

@@ -1,4 +1,4 @@
-# Raknetify — Mainland China Network Fork
+# Raknetify — Fork for Poor Network Conditions and ISP Restrictions
 
 [简体中文](README.md) | **English**
 
