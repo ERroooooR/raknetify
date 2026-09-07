@@ -10,9 +10,9 @@
 
 上游面向不可靠、受限网络下的 Minecraft 联机体验；本分支的目标与上游不同，主要针对**中国大陆地区的 QoS、限包速、丢包、抖动与突发流量情况**修改和调优。无法确保这些策略具有普适性，也不保证在其他地区、运营商或线路上改善性能。
 
-**本分支仅确保 NeoForge 环境下与信雅互联（Sinytra Connector）的兼容性。** 这里指通过 Connector 加载 Fabric 版 Raknetify，并非提供原生 NeoForge 模组。这一兼容范围不等于承诺所有 Minecraft / NeoForge / Connector 版本、整合包或最新构建都稳定可用。
+**本分支支持 NeoForge 环境下的信雅互联（Sinytra Connector），Velocity（VC）代理环境也可用。** 这里指通过 Connector 加载 Fabric 版 Raknetify，并非提供原生 NeoForge 模组。这一兼容范围不等于承诺所有 Minecraft / NeoForge / Connector 版本、整合包或最新构建都稳定可用。
 
-仓库仍保留 Fabric、Velocity、BungeeCord 等上游模块及部分兼容代码，但它们的存在不代表本分支对这些独立环境作出兼容性保证。
+其他平台（如原生 Fabric、BungeeCord）预计也可用，但尚未经测试，不作兼容性保证。ViaVersion 等组合也需要单独验证。
 
 ## 已完成的改进
 
@@ -27,6 +27,12 @@
 - **连接处理：** 增加 Gate 路由提示，修正 IPv6 地址处理及部分握手、关闭和分片同步行为。
 
 实现入口：[传输配置](common/src/main/java/com/ishland/raknetify/common/connection/RakNetConnectionUtil.java)、[Fabric 适配](fabric/src/main/java/com/ishland/raknetify/fabric/mixin)、[传输子模块](netty-raknet)、[恢复设计与开关](docs/ADAPTIVE_RECOVERY_ROADMAP.md)。设计文档包含演进方向，不能将所有设想视为已完成的性能验证。
+
+## 优化前后对比
+
+![网络优化对比：上方为优化后，下方为优化前](docs/images/network-optimization-comparison.png)
+
+**上方：优化后；下方：优化前。** 这是实际使用场景的截图对比，用于展示该场景下的表现变化，不代表所有地区和线路都能获得相同效果。
 
 ## 网络优化如何工作
 
@@ -91,7 +97,7 @@ DPLPMTUD 对候选载荷发送探测并等待确认，以近似二分方式搜�
 
 1. 从**本仓库**的 [Releases](https://github.com/ERroooooR/raknetify/releases)（如有发布）或 [Actions 构建产物](https://github.com/ERroooooR/raknetify/actions/workflows/build.yml)获取对应版本。上游下载渠道不代表本分支构建。
 2. 在 NeoForge 中通过信雅互联加载适配当前 Minecraft 版本的 Fabric 产物，并安装该 Connector 版本要求的依赖。不要仅凭上游的历史版本范围判断本分支兼容性。
-3. 直连时客户端和服务端均需安装；使用代理时，RakNet 终止于安装了对应插件的代理，后端通常无需安装。代理部署属于本分支不保证兼容的环境。
+3. 直连时客户端和服务端均需安装；使用代理时，RakNet 终止于安装了对应插件的代理，后端通常无需安装。Velocity（VC）环境可用，其他代理平台预计可用但未经测试。
 4. 在服务端或代理放行与 Minecraft TCP 端口**相同端口号的 UDP 端口**，并确保 NAT / 转发链路支持 UDP。
 5. 使用 `raknet;example.com` 连接。`raknetl;` 会请求高 MTU，不适合作为未经验证线路的默认选择。
 
@@ -99,8 +105,9 @@ DPLPMTUD 对候选载荷发送探测并等待确认，以近似二分方式搜�
 
 | 场景 | 行为与限制 |
 | --- | --- |
-| NeoForge + 信雅互联 | 本分支唯一承诺的兼容方向；仍需匹配游戏、加载器、Connector 和依赖版本。 |
-| 原生 Fabric / Velocity / BungeeCord / ViaVersion | 保留上游实现或相关适配，但不保证本分支兼容；代理遇到不支持的客户端版本时，多通道可能无法初始化，响应性下降。 |
+| NeoForge + 信雅互联 | 本分支支持的模组运行环境；仍需匹配游戏、加载器、Connector 和依赖版本。 |
+| Velocity（VC） | 可用；需使用对应代理插件并匹配客户端版本。代理遇到不支持的客户端版本时，多通道可能无法初始化，响应性下降。 |
+| 其他平台与组合 | 原生 Fabric、BungeeCord 等平台预计可用，但未经测试；ViaVersion 等组合也尚未验证，不作兼容性保证。 |
 | 旧版 RakNet 对端 | 可按握手结果回退到 v11；v12 扩展能力需要协商，回退不代表保留所有优化。 |
 | BandwidthOptimizer | 默认检测后由其负责压缩，关闭 RakNet 连接的流式 Deflate、原版压缩和其延迟批处理，以保留逐包优先级；TCP 连接不受这些调整影响。 |
 | ZSTD_Compresser | 检测 `zstd_compresser` 客户端与 `zstd_velocity` 插件，关闭流式 Deflate，保留必要的 `SetCompression` 协商，并在 Velocity 移除冗余 TCP 长度前缀。合批期间使用单个有序通道，失去原始逐包多通道优先级，仍可能出现队头阻塞。 |
@@ -134,7 +141,13 @@ ZSTD_Compresser 的大批次可能增加分片等待。可在客户端和 Veloci
 
 `raknetify.adaptiveAckProtection`、`raknetify.adaptiveNackGrace`、`raknetify.adaptiveNackProtection` 默认开启，可分别设为 `false` 做对照测试。高级恢复开关见[恢复文档](docs/ADAPTIVE_RECOVERY_ROADMAP.md)。压缩适配可用 `-Draknetify.bandwidthOptimizerCompatibility=false` 或 `-Draknetify.zstdCompresserCompatibility=false` 在两端关闭以排查问题。
 
-提交 Issue 时请附上构建提交号、Minecraft / NeoForge / Connector 版本、模组与代理列表、网络拓扑、复现步骤及相关日志或指标片段；分享前移除 IP、令牌等敏感信息。
+### 反馈地区与线路差异
+
+不同地区、运营商及线路的 QoS 策略可能不一致，同一组参数或算法在不同网络上的表现也可能不同。欢迎向[本仓库提交 Issue](https://github.com/ERroooooR/raknetify/issues)，并附上遥测日志，帮助改进丢包分类、调速与恢复算法。
+
+请在相关客户端及服务端或 Velocity 代理启用 `-Draknetify.metricsJsonl=true`，复现问题后附上对应时段的 `logs/raknetify-metrics.jsonl`，并注明日志来自哪一端、问题发生时间；如有优化前后的对照日志，也请一并提供。
+
+同时说明大致地区、运营商、直连或代理/中转拓扑、构建提交号、Minecraft / NeoForge / Connector / Velocity 等实际使用版本、模组列表及复现步骤。分享前移除 IP、令牌等敏感信息。
 
 ## 许可证与致谢
 

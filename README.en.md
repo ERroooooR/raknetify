@@ -10,9 +10,9 @@ This is an unofficial fork of [RelativityMC/raknetify](https://github.com/Relati
 
 Upstream targets Minecraft multiplayer over unreliable and rate-limited connections. This fork has a different goal: changes and tuning specifically for **QoS, packet-rate limits, loss, jitter and traffic bursts on networks in mainland China**. These strategies are not guaranteed to be universally applicable or to improve performance in other regions, on other carriers or on other paths.
 
-**This fork only guarantees compatibility with Sinytra Connector in a NeoForge environment.** This means loading the Fabric version of Raknetify through Connector; it is not a native NeoForge mod. This compatibility scope does not promise stability for every Minecraft / NeoForge / Connector version, modpack or latest build.
+**This fork supports Sinytra Connector on NeoForge, and the Velocity (VC) proxy environment is also usable.** This means loading the Fabric version of Raknetify through Connector; it is not a native NeoForge mod. This compatibility scope does not promise stability for every Minecraft / NeoForge / Connector version, modpack or latest build.
 
-The repository retains upstream Fabric, Velocity and BungeeCord modules and other compatibility code. Their presence does not imply a compatibility guarantee for those standalone environments in this fork.
+Other platforms, such as standalone Fabric and BungeeCord, are expected to work but have not been tested; compatibility is not guaranteed. Combinations involving ViaVersion also need separate validation.
 
 ## Implemented improvements
 
@@ -27,6 +27,12 @@ The following mechanisms are present in the current code and pinned `netty-rakne
 - **Connection handling:** Gate route hints, IPv6 address handling fixes, and adjustments to handshake, shutdown and fragment synchronization behavior.
 
 Implementation entry points: [transport configuration](common/src/main/java/com/ishland/raknetify/common/connection/RakNetConnectionUtil.java), [Fabric integration](fabric/src/main/java/com/ishland/raknetify/fabric/mixin), [transport submodule](netty-raknet), and [recovery design and switches](docs/ADAPTIVE_RECOVERY_ROADMAP.md). The design document includes development directions; not every proposal constitutes completed performance validation.
+
+## Before and after optimization
+
+![Network optimization comparison: after optimization on top, before optimization on the bottom](docs/images/network-optimization-comparison.png)
+
+**Top: after optimization. Bottom: before optimization.** These screenshots illustrate the change in one real usage scenario; they do not establish the same benefit across all regions and network paths.
 
 ## How the network optimizations work
 
@@ -91,7 +97,7 @@ Sources: [DplpmtudController](https://github.com/RelativityMC/netty-raknet/blob/
 
 1. Obtain the appropriate version from **this repository's** [Releases](https://github.com/ERroooooR/raknetify/releases), if available, or [Actions artifacts](https://github.com/ERroooooR/raknetify/actions/workflows/build.yml). Upstream download channels do not represent builds of this fork.
 2. Load the Fabric artifact matching your Minecraft version through Sinytra Connector on NeoForge, with the dependencies required by that Connector version. Do not infer this fork's compatibility solely from upstream's historical version range.
-3. Direct connections require installation on both client and server. With a proxy, RakNet terminates at the proxy running the corresponding plugin; backend installation is generally unnecessary. Proxy deployments are outside this fork's guaranteed compatibility scope.
+3. Direct connections require installation on both client and server. With a proxy, RakNet terminates at the proxy running the corresponding plugin; backend installation is generally unnecessary. Velocity (VC) is usable; other proxy platforms are expected to work but have not been tested.
 4. Open a **UDP port with the same port number as the Minecraft TCP port** on the server or proxy, and ensure the NAT / forwarding path supports UDP.
 5. Connect using `raknet;example.com`. The `raknetl;` prefix requests a high MTU and should not be the default for an unverified path.
 
@@ -99,8 +105,9 @@ Sources: [DplpmtudController](https://github.com/RelativityMC/netty-raknet/blob/
 
 | Scenario | Behavior and limitations |
 | --- | --- |
-| NeoForge + Sinytra Connector | The only compatibility target guaranteed by this fork; game, loader, Connector and dependency versions still need to match. |
-| Standalone Fabric / Velocity / BungeeCord / ViaVersion | Upstream implementations or integrations remain, but compatibility is not guaranteed by this fork. Unsupported client versions on proxies may prevent multi-channel initialization and reduce responsiveness. |
+| NeoForge + Sinytra Connector | A supported mod environment for this fork; game, loader, Connector and dependency versions still need to match. |
+| Velocity (VC) | Usable with the corresponding proxy plugin and matching client versions. Unsupported client versions on proxies may prevent multi-channel initialization and reduce responsiveness. |
+| Other platforms and combinations | Standalone Fabric, BungeeCord and other platforms are expected to work but have not been tested. ViaVersion combinations are also unverified; compatibility is not guaranteed. |
 | Older RakNet peers | Handshake rejection can trigger fallback to v11. v12 extensions require negotiation; fallback does not retain every optimization. |
 | BandwidthOptimizer | Detected by default and takes over compression. Streaming Deflate, vanilla compression and its delayed batching are disabled for RakNet connections to preserve per-packet priority. These adjustments do not affect TCP connections. |
 | ZSTD_Compresser | Detects the `zstd_compresser` client mod and `zstd_velocity` plugin, disables streaming Deflate, preserves required `SetCompression` negotiation and removes the redundant TCP length prefix on Velocity. Batched traffic uses one ordered channel, losing original per-packet multi-channel priority; head-of-line blocking remains possible. |
@@ -134,7 +141,13 @@ Logs are written to `logs/raknetify-metrics.jsonl` under the game or proxy worki
 
 `raknetify.adaptiveAckProtection`, `raknetify.adaptiveNackGrace` and `raknetify.adaptiveNackProtection` default to enabled and can individually be set to `false` for comparison tests. See the [recovery document](docs/ADAPTIVE_RECOVERY_ROADMAP.md) for advanced recovery switches. Compression integrations can be disabled on both endpoints using `-Draknetify.bandwidthOptimizerCompatibility=false` or `-Draknetify.zstdCompresserCompatibility=false` for troubleshooting.
 
-When filing an issue, include the build commit, Minecraft / NeoForge / Connector versions, mod and proxy lists, network topology, reproduction steps and relevant logs or metric excerpts. Remove sensitive information such as IP addresses and tokens before sharing.
+### Report regional and network-path differences
+
+QoS policies can vary by region, carrier and network path, so the same parameters or algorithms may behave differently across networks. Please [file an issue in this repository](https://github.com/ERroooooR/raknetify/issues) and attach telemetry logs to help improve loss classification, rate adaptation and recovery algorithms.
+
+Enable `-Draknetify.metricsJsonl=true` on the relevant client and server or Velocity proxy. Reproduce the problem and attach `logs/raknetify-metrics.jsonl` for the affected period, identifying the endpoint and time of the problem. Include before/after telemetry when available.
+
+Also provide your approximate region, carrier, direct/proxy/relay topology, build commit, applicable Minecraft / NeoForge / Connector / Velocity versions, mod list and reproduction steps. Remove sensitive information such as IP addresses and tokens before sharing.
 
 ## License and credits
 
